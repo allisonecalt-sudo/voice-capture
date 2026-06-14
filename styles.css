@@ -7,7 +7,9 @@
         Record button is huge and unmistakable; recording state screams ON (pulse + red
         pill + big mm:ss + live waveform). RTL base; transcript uses dir=auto.
   BUILT:  tokens, header, record stage, recording indicator/waveform, spinner, result,
-        settings. Sized for a Pixel 7 Pro (~412×892 dp), one-handed.
+        settings. Sized for a Pixel 7 Pro (~412×892 dp), one-handed. Plus: To-Do/Thought
+        routing chips (result + history rows) and History filter chips + sort toggle — same
+        calm pill language, large touch targets, accent = selected.
   NEXT:   none for v0.
 */
 
@@ -345,6 +347,47 @@ body {
   color: var(--text-dim);
 }
 
+/* ── Routing tag chips (result screen) ── */
+.tag-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+.tag-row-label {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.tag-chips {
+  display: flex;
+  gap: 10px;
+}
+.tag-chip {
+  flex: 1;
+  min-height: 48px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.tag-chip:active {
+  transform: scale(0.98);
+}
+.tag-chip.is-active {
+  background: var(--accent);
+  color: #0c2620;
+  border-color: var(--accent);
+}
+
 .result-actions {
   display: flex;
   gap: 12px;
@@ -446,6 +489,55 @@ body {
   align-items: center;
   justify-content: space-between;
 }
+
+/* ── History controls: filter chips + sort toggle ── */
+.history-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.filter-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.filter-chip {
+  min-height: 44px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0 16px;
+}
+.filter-chip:active {
+  transform: scale(0.98);
+}
+.filter-chip.is-active {
+  background: var(--accent);
+  color: #0c2620;
+  border-color: var(--accent);
+}
+.sort-toggle {
+  min-height: 44px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0 16px;
+  white-space: nowrap;
+}
+.sort-toggle:active {
+  transform: scale(0.98);
+}
+
 .history-empty {
   color: var(--text-dim);
   font-size: 1rem;
@@ -474,11 +566,42 @@ body {
   justify-content: space-between;
   gap: 10px;
 }
+.history-meta-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .history-time {
   font-size: 0.8rem;
   color: var(--text-dim);
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+/* ── Per-row tap-to-cycle tag chip ── */
+.history-tag-chip {
+  min-height: 36px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.history-tag-chip:active {
+  transform: scale(0.97);
+}
+.history-tag-chip.is-tagged {
+  background: var(--accent);
+  color: #0c2620;
+  border-color: var(--accent);
+}
+.history-tag-chip.is-untagged {
+  color: var(--text-dim);
 }
 .sync-dot {
   font-size: 0.85rem;

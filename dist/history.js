@@ -1,15 +1,20 @@
-// history.ts — local transcript history + Supabase sync retry
+// history.ts — local transcript history + Supabase sync retry + to-do/thought tagging
 // WHAT: the localStorage-backed list of saved transcripts (newest first, capped), plus the
 //       sync logic that pushes unsynced items to the voice_captures inbox and flips them to
-//       synced. The one rule: a transcript is ALWAYS written locally first, then synced —
-//       so an offline phone never loses a note.
-// WHY:  anon RLS is INSERT-only (can't read Supabase back), so the in-app History view must
-//       come from localStorage. This module owns that store so app.ts stays about UI/state
-//       and the Playwright tests can seed/inspect the store directly.
-// DECIDED: key = 'vc.history'; cap 200 (oldest dropped); each item carries `synced` so a
-//          failed save just stays false and retries next load / next save. id via crypto
-//          .randomUUID with a timestamp fallback. createdAt = new Date().toISOString().
-// BUILT:  HistoryItem type, load/save store, addCapture, deleteCapture, syncPending.
+//       synced. Each item also carries a routing tag (`category`: 'todo' | 'thought' | none).
+//       The one rule: a transcript is ALWAYS written locally first, then synced — so an offline
+//       phone never loses a note (or a tag).
+// WHY:  anon RLS is INSERT-ONLY (can't read Supabase back, can't update it either), so the
+//       in-app History view must come from localStorage. This module owns that store so app.ts
+//       stays about UI/state and the Playwright tests can seed/inspect the store directly. The
+//       category is how Claude routes the note (to-do → task list, thought → thinking notes).
+// DECIDED: key = 'vc.history'; cap 200 (oldest dropped); each item carries `synced` so a failed
+//          save just stays false and retries next load / next sync. id via crypto.randomUUID
+//          with a timestamp fallback. createdAt = new Date().toISOString(). NO supabaseId is
+//          kept — anon can't update a row after insert, so there's nothing to address later; the
+//          tag rides along IN the INSERT body. The send is deferred (by app.ts) until she leaves
+//          the result screen, so the final tag is the one that lands.
+// BUILT:  HistoryItem type, load/save store, addCapture, deleteCapture, setCategory, syncPending.
 // NEXT:   none — stable. If history ever needs cross-device, that's an authed read surface.
 import { saveCapture } from './supabase.js';
 const HISTORY_KEY = 'vc.history';
@@ -82,9 +87,33 @@ export function deleteCapture(id) {
     saveHistory(items);
 }
 /**
- * Try to POST every unsynced item to Supabase; flip each to synced on success.
- * Resilient by design: a failed item just stays unsynced and is retried next time.
- * Returns the number of items newly synced this pass.
+ * Set (or clear, with null) the routing tag on a local history item and return the updated
+ * item (or null if no such item). LOCAL ONLY — writes localStorage and never touches the
+ * network. There is no server-side update path (anon can't UPDATE): the tag reaches Supabase
+ * only when this item is first sent, riding along in the INSERT body. So tagging a not-yet-sent
+ * item before it syncs is fully captured; re-tagging an already-sent item updates only the phone
+ * copy (known, accepted v0 limitation — the normal flow tags on the result screen before the
+ * send, so the tag always lands).
+ */
+export function setCategory(id, category) {
+    const items = loadHistory();
+    const item = items.find((i) => i.id === id);
+    if (!item)
+        return null;
+    if (category === 'todo' || category === 'thought') {
+        item.category = category;
+    }
+    else {
+        delete item.category;
+    }
+    saveHistory(items);
+    return item;
+}
+/**
+ * Try to POST every unsynced item to Supabase (insert-only); flip each to synced on success.
+ * The item's `category` rides along in the INSERT body so the tag lands WITH the row — there is
+ * no later PATCH (anon can't update). Resilient by design: a failed item just stays unsynced and
+ * is retried next time. Returns the number of items newly synced this pass.
  */
 export async function syncPending() {
     const items = loadHistory();
@@ -93,7 +122,7 @@ export async function syncPending() {
         if (item.synced)
             continue;
         try {
-            await saveCapture(item.transcript, item.durationSeconds);
+            await saveCapture(item.transcript, item.durationSeconds, item.category);
             item.synced = true;
             syncedCount++;
         }

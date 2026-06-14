@@ -11,10 +11,15 @@
 //          Inline ceiling ~10 min (warn past it). Hebrew RTL; transcript output dir=auto.
 // BUILT:  state machine + render(), AudioRecorder (getUserMedia + ScriptProcessor PCM
 //          capture + RMS for the waveform), Gemini call, copy-to-clipboard, Settings.
+//          Plus: To-Do/Thought routing chips (result screen + tap-to-cycle in History) that
+//          tag each note LOCALLY; the tag reaches Supabase only via the note's INSERT (anon is
+//          insert-only — no update path). The Supabase SEND is deferred until she LEAVES the
+//          result screen, so the final tag rides along in the insert. History filter
+//          (All / To-Do / Thoughts) + sort (Newest / Oldest), pure client-side.
 // NEXT:   v0 complete. Long-recording File API upload path is deliberately out of scope.
 import { transcribeAudio } from './gemini.js';
 import { TARGET_SAMPLE_RATE, downsampleBuffer, mergeChunks, encodeWav, blobToBase64, wavByteLength, } from './wav.js';
-import { addCapture, deleteCapture, loadHistory, syncPending, } from './history.js';
+import { addCapture, deleteCapture, loadHistory, setCategory, syncPending, } from './history.js';
 // ── Constants ───────────────────────────────────────────────────────────────
 const KEY_STORAGE = 'voice-capture.gemini-key';
 // Inline base64 ceiling. A 16 kHz mono 16-bit WAV is ~32 KB/sec ≈ 1.9 MB/min, and
@@ -31,6 +36,9 @@ const state = {
     levels: new Array(WAVEFORM_BARS).fill(0),
     saveStatus: 'none',
     copiedHistoryId: null,
+    resultItemId: null,
+    historyFilter: 'all',
+    historySort: 'newest',
 };
 // ── Key storage (localStorage only) ─────────────────────────────────────────
 function getKey() {
@@ -152,6 +160,7 @@ async function beginRecording() {
     state.transcript = '';
     state.copied = false;
     state.saveStatus = 'none';
+    state.resultItemId = null;
     state.levels = new Array(WAVEFORM_BARS).fill(0);
     recorder = new AudioRecorder();
     recorder.onLevel = (level) => {
@@ -206,9 +215,10 @@ async function finishRecording() {
         state.transcript = transcript;
         state.screen = 'result';
         render();
-        // A transcript is a message to Claude: write it to local history FIRST (never lose it),
-        // then try to sync. The status on the result screen reflects whether the sync landed.
-        void autoSave(transcript, durationSeconds);
+        // A transcript is a message to Claude: write it to local history NOW (never lose it). The
+        // Supabase SEND is deferred until she leaves the result screen — so the To-Do/Thought tag she
+        // picks here rides along in the single INSERT (anon is insert-only; there's no later update).
+        saveLocal(transcript, durationSeconds);
     }
     catch (err) {
         state.error = err instanceof Error ? err.message : 'Transcription failed. Please try again.';
@@ -216,22 +226,47 @@ async function finishRecording() {
         render();
     }
 }
-// ── Auto-save: local history first, then sync to the Claude inbox ─────────────
-async function autoSave(transcript, durationSeconds) {
-    // 1) Always persist locally first — this is the never-lose-a-transcript guarantee.
+// ── Save: local history is the guarantee; the Supabase send happens on leave ──
+function saveLocal(transcript, durationSeconds) {
+    // Persist locally — this is the never-lose-a-transcript guarantee AND the only save that
+    // happens here. The Supabase send is deferred to when she leaves the result screen (so the
+    // final To-Do/Thought tag is included in the single insert), via void syncPending() in the
+    // leave handlers + the pagehide/visibilitychange flush.
     const item = addCapture(transcript, durationSeconds);
-    // 2) Try to push this item (and any earlier unsynced ones) to Supabase.
-    try {
-        await syncPending();
-    }
-    catch {
-        // syncPending swallows per-item failures; this guard is belt-and-suspenders.
-    }
-    // 3) Reflect the result of THIS item on the result screen, if she's still there.
-    const synced = loadHistory().find((h) => h.id === item.id)?.synced ?? false;
-    state.saveStatus = synced ? 'saved' : 'pending';
+    // Remember which local row this is so the result-screen To-Do/Thought chips can tag it.
+    state.resultItemId = item.id;
+    // The local save is the truth she sees: it's safely on the phone and will send automatically.
+    state.saveStatus = 'saved';
     if (state.screen === 'result')
-        updateSaveStatus();
+        render();
+}
+// ── Tagging: to-do / thought routing chips (LOCAL ONLY) ───────────────────────
+/**
+ * Set or clear the routing tag on a history item. LOCAL ONLY — writes localStorage and
+ * re-renders. There is no network call here: anon is insert-only (no UPDATE), so the tag
+ * reaches Supabase only via the note's eventual INSERT. The normal flow tags on the result
+ * screen BEFORE leaving, and the send fires on leave, so the chosen tag always lands in the
+ * insert. (Re-tagging a note in History after it's already been sent updates only the phone
+ * copy — known, accepted v0 limitation; see history.ts setCategory.)
+ * Tapping the already-active chip clears the tag back to unsorted (null).
+ */
+function setItemCategory(id, next) {
+    const updated = setCategory(id, next);
+    if (!updated)
+        return;
+    // Re-render so the active chip + history chip reflect the new tag right away.
+    render();
+}
+/** Toggle a category on a row: tapping the active tag clears it, otherwise sets the new one. */
+function toggleCategory(id, tag) {
+    const current = loadHistory().find((h) => h.id === id)?.category;
+    setItemCategory(id, current === tag ? null : tag);
+}
+/** Cycle a row's tag in place: unsorted → To-Do → Thought → unsorted (for the history chip). */
+function cycleCategory(id) {
+    const current = loadHistory().find((h) => h.id === id)?.category ?? null;
+    const next = current === null ? 'todo' : current === 'todo' ? 'thought' : null;
+    setItemCategory(id, next);
 }
 function cancelRecording() {
     if (timerId !== null) {
@@ -396,6 +431,19 @@ function renderResult() {
     const errorBlock = state.error
         ? `<p class="error-banner" role="alert">${escapeHtml(state.error)}</p>`
         : '';
+    const current = state.resultItemId
+        ? (loadHistory().find((h) => h.id === state.resultItemId)?.category ?? null)
+        : null;
+    // Only offer tagging once we have a saved local row to attach the tag to.
+    const tagBlock = state.resultItemId
+        ? `<div class="tag-row" role="group" aria-label="Route this note">
+         <span class="tag-row-label">Route to Claude as</span>
+         <div class="tag-chips">
+           ${categoryChip('todo', current === 'todo')}
+           ${categoryChip('thought', current === 'thought')}
+         </div>
+       </div>`
+        : '';
     return `
     ${header()}
     <main class="screen screen-result">
@@ -404,6 +452,7 @@ function renderResult() {
       <textarea class="transcript" id="transcript" dir="auto" spellcheck="false"
                 aria-label="Transcript">${escapeHtml(state.transcript)}</textarea>
       <p class="save-status ${saveStatusClass()}" id="save-status" aria-live="polite">${saveStatusText()}</p>
+      ${tagBlock}
       <div class="result-actions">
         <button class="btn btn-primary copy-btn" id="copy-btn">
           ${state.copied ? 'Copied ✓' : 'Copy'}
@@ -412,11 +461,19 @@ function renderResult() {
       </div>
     </main>`;
 }
+/** A To-Do / Thought toggle chip. `active` paints it as the selected route. */
+function categoryChip(tag, active) {
+    const label = tag === 'todo' ? '📝 To-Do' : '💭 Thought';
+    return `<button class="tag-chip ${active ? 'is-active' : ''}" data-tag="${tag}"
+            aria-pressed="${active ? 'true' : 'false'}">${label}</button>`;
+}
 function saveStatusText() {
     switch (state.saveStatus) {
         case 'saved':
+            // Local save is the guarantee; the send to Claude happens when she leaves this screen.
             return 'Saved ✓';
         case 'pending':
+            // Safety branch — normally unused now that the save here is local-only.
             return 'Saved on phone — will sync';
         default:
             return 'Saving…';
@@ -426,19 +483,61 @@ function saveStatusClass() {
     return state.saveStatus === 'pending' ? 'is-pending' : 'is-saved';
 }
 function renderHistory() {
-    const items = loadHistory();
-    const list = items.length
-        ? `<ul class="history-list">${items.map(renderHistoryRow).join('')}</ul>`
-        : `<p class="history-empty">No saved notes yet.</p>`;
+    const all = loadHistory();
+    const items = sortHistory(filterHistory(all, state.historyFilter), state.historySort);
+    // Empty state distinguishes "nothing saved" from "nothing matches this filter".
+    let list;
+    if (items.length) {
+        list = `<ul class="history-list">${items.map(renderHistoryRow).join('')}</ul>`;
+    }
+    else if (all.length) {
+        list = `<p class="history-empty">No ${state.historyFilter === 'todo' ? 'to-dos' : 'thoughts'} yet.</p>`;
+    }
+    else {
+        list = `<p class="history-empty">No saved notes yet.</p>`;
+    }
     return `
     ${header()}
     <main class="screen screen-history">
       <div class="history-head">
         <h2 class="settings-title">History</h2>
       </div>
+      <div class="history-controls">
+        <div class="filter-chips" role="group" aria-label="Filter notes">
+          ${filterChip('all', 'All')}
+          ${filterChip('todo', '📝 To-Do')}
+          ${filterChip('thought', '💭 Thoughts')}
+        </div>
+        <button class="sort-toggle" id="sort-toggle"
+                aria-label="Sort order, currently ${state.historySort}">
+          ${state.historySort === 'newest' ? 'Newest ↓' : 'Oldest ↑'}
+        </button>
+      </div>
       ${list}
       <button class="btn btn-secondary back-btn" id="history-back-btn">Back</button>
     </main>`;
+}
+/** A History filter chip (All / To-Do / Thoughts). `active` paints the current selection. */
+function filterChip(value, label) {
+    const active = state.historyFilter === value;
+    return `<button class="filter-chip ${active ? 'is-active' : ''}" data-filter="${value}"
+            aria-pressed="${active ? 'true' : 'false'}">${label}</button>`;
+}
+/** Keep only items matching the active filter ('all' keeps everything). */
+function filterHistory(items, filter) {
+    if (filter === 'all')
+        return items;
+    return items.filter((i) => i.category === filter);
+}
+/** Sort a COPY of the list by createdAt. The store itself stays newest-first untouched. */
+function sortHistory(items, sort) {
+    const copy = items.slice();
+    copy.sort((a, b) => {
+        const ta = Date.parse(a.createdAt);
+        const tb = Date.parse(b.createdAt);
+        return sort === 'newest' ? tb - ta : ta - tb;
+    });
+    return copy;
 }
 function renderHistoryRow(item) {
     const copied = state.copiedHistoryId === item.id;
@@ -449,7 +548,10 @@ function renderHistoryRow(item) {
     <li class="history-item" data-id="${escapeHtml(item.id)}">
       <div class="history-meta">
         <span class="history-time">${escapeHtml(relativeTime(item.createdAt))}</span>
-        ${syncDot}
+        <div class="history-meta-right">
+          ${historyTagChip(item)}
+          ${syncDot}
+        </div>
       </div>
       <p class="history-text" dir="auto">${escapeHtml(item.transcript)}</p>
       <div class="history-actions">
@@ -460,6 +562,18 @@ function renderHistoryRow(item) {
                 aria-label="Delete note">Delete</button>
       </div>
     </li>`;
+}
+/**
+ * A small tap-to-cycle tag chip on a history row: unsorted → To-Do → Thought → unsorted.
+ * Same local+Supabase update path as the result screen. Label shows the current tag (or
+ * a faint "Tag" prompt when unsorted) so she can change it right there in the list.
+ */
+function historyTagChip(item) {
+    const cat = item.category;
+    const label = cat === 'todo' ? '📝 To-Do' : cat === 'thought' ? '💭 Thought' : '＋ Tag';
+    const cls = cat ? 'is-tagged' : 'is-untagged';
+    return `<button class="history-tag-chip ${cls}" data-id="${escapeHtml(item.id)}"
+            aria-label="Tag: ${cat ?? 'none'}, tap to change">${label}</button>`;
 }
 function renderSettings() {
     const key = getKey();
@@ -515,14 +629,6 @@ function updateCopiedState() {
     if (btn)
         btn.textContent = state.copied ? 'Copied ✓' : 'Copy';
 }
-function updateSaveStatus() {
-    const el = document.getElementById('save-status');
-    if (!el)
-        return;
-    el.textContent = saveStatusText();
-    el.classList.remove('is-saved', 'is-pending');
-    el.classList.add(saveStatusClass());
-}
 function barHeight(level) {
     // Map 0..1 → 8..100% so even silence shows a baseline bar.
     return Math.round(8 + level * 92);
@@ -530,11 +636,19 @@ function barHeight(level) {
 // ── Event wiring ─────────────────────────────────────────────────────────────
 function wireScreen() {
     document.getElementById('open-settings')?.addEventListener('click', () => {
+        // Leaving the result screen → send any not-yet-sent notes to Claude now, with their final
+        // tag baked into the insert (anon is insert-only; the tag can't be set after the send).
+        void syncPending();
         state.screen = 'settings';
         render();
     });
     document.getElementById('open-history')?.addEventListener('click', () => {
+        // Leaving the result screen → flush pending notes (tag included in the insert) before we go.
+        void syncPending();
         state.copiedHistoryId = null;
+        // Open History at the calm default each time: everything, newest first.
+        state.historyFilter = 'all';
+        state.historySort = 'newest';
         state.screen = 'history';
         render();
     });
@@ -562,7 +676,20 @@ function wireScreen() {
         document.getElementById('copy-btn')?.addEventListener('click', () => {
             void copyTranscript();
         });
+        // To-Do / Thought routing chips: tap to set, tap the active one to clear.
+        document.querySelectorAll('.tag-chip').forEach((chip) => {
+            chip.addEventListener('click', () => {
+                const id = state.resultItemId;
+                const tag = chip.dataset.tag;
+                if (!id || (tag !== 'todo' && tag !== 'thought'))
+                    return;
+                toggleCategory(id, tag);
+            });
+        });
         document.getElementById('again-btn')?.addEventListener('click', () => {
+            // Leaving the result screen → send any not-yet-sent notes to Claude now, with their final
+            // tag included in the insert (anon is insert-only; the tag can't be set after the send).
+            void syncPending();
             state.transcript = '';
             state.error = null;
             state.copied = false;
@@ -604,6 +731,29 @@ function wireScreen() {
             state.copiedHistoryId = null;
             state.screen = 'idle';
             render();
+        });
+        // Filter chips: All / To-Do / Thoughts (pure client-side over the local list).
+        document.querySelectorAll('.filter-chip').forEach((chip) => {
+            chip.addEventListener('click', () => {
+                const f = chip.dataset.filter;
+                if (f === 'all' || f === 'todo' || f === 'thought') {
+                    state.historyFilter = f;
+                    render();
+                }
+            });
+        });
+        // Sort toggle: Newest ↔ Oldest.
+        document.getElementById('sort-toggle')?.addEventListener('click', () => {
+            state.historySort = state.historySort === 'newest' ? 'oldest' : 'newest';
+            render();
+        });
+        // Row tag chips: tap to cycle unsorted → To-Do → Thought → unsorted.
+        document.querySelectorAll('.history-tag-chip').forEach((chip) => {
+            chip.addEventListener('click', () => {
+                const id = chip.dataset.id;
+                if (id)
+                    cycleCategory(id);
+            });
         });
         document.querySelectorAll('.history-copy').forEach((btn) => {
             btn.addEventListener('click', () => {
@@ -687,10 +837,22 @@ function relativeTime(iso) {
 // ── Boot ─────────────────────────────────────────────────────────────────────
 render();
 // On load, flush any transcripts that were saved locally but never reached the inbox
-// (e.g. recorded while offline). Failures stay unsynced and retry next load — fire and
-// forget so a slow/absent network never blocks the UI.
+// (e.g. recorded while offline, or left a previous session unsent). Failures stay unsynced
+// and retry next load — fire and forget so a slow/absent network never blocks the UI.
 void syncPending().then((n) => {
     // If she's looking at History when a backlog clears, refresh the sync dots.
     if (n > 0 && state.screen === 'history')
         render();
+});
+// Best-effort flush when she closes / backgrounds the app (e.g. taps a result note's tag, then
+// just leaves without hitting a leave button). pagehide fires on navigation/close; the
+// visibilitychange→hidden mirror covers tab-switch / app-background on mobile. Both are
+// fire-and-forget — the local copy is already safe and the on-load sync is the backstop.
+window.addEventListener('pagehide', () => {
+    void syncPending();
+});
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+        void syncPending();
+    }
 });

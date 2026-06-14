@@ -6,10 +6,15 @@
 //       STRUCTURE: no-key prompt, record button, recording indicator (timer + pulse +
 //       waveform), spinner, transcript + copy. The WAV encoder is unit-checked in-page.
 // DECIDED: mock at the browser-API boundary (navigator.mediaDevices, AudioContext,
-//          window.fetch) — the app code under test stays untouched. The Supabase save POST
-//          is ALSO intercepted here (canned 201) so save/history tests never hit prod;
-//          an offline variant makes that fetch reject to exercise the "will sync" path.
-// BUILT:  fixtures + the tests below (incl. save→history, offline-local-save, history view).
+//          window.fetch) — the app code under test stays untouched. The Supabase save POST is
+//          ALSO intercepted here (canned 201, EMPTY body — anon is insert-only, Prefer:
+//          return=minimal, no id read-back) so save/history tests never hit prod; an offline
+//          variant makes the POST reject to exercise the "will sync" path. There is NO PATCH
+//          path anymore (anon can't update) — the To-Do/Thought tag is local until it rides
+//          along in the note's INSERT, which fires when she LEAVES the result screen.
+// BUILT:  fixtures + the tests below (incl. transcription saves locally but doesn't POST yet,
+//          POST fires on leave with the tag in the body, offline-local-save, history view,
+//          To-Do/Thought tagging is local, history filter, history sort).
 // NEXT:   none for v0.
 
 import { test, expect } from '@playwright/test';
@@ -23,8 +28,10 @@ const SUPABASE_HOST = 'hpiyvnfhoqnnnotrmwaz.supabase.co';
  *  - navigator.mediaDevices.getUserMedia → a dummy MediaStream with a stoppable track
  *  - AudioContext → a fake that emits one audio frame so the waveform/levels move
  *  - window.fetch → intercept the Gemini endpoint (canned transcript) AND the Supabase
- *    voice_captures POST (canned 201, recorded on window.__supabasePosts); when
- *    `supabaseOnline` is false the Supabase fetch REJECTS to exercise the offline path.
+ *    voice_captures POST (canned 201 with an EMPTY body — Prefer: return=minimal, anon is
+ *    insert-only, no id read-back; each POST body recorded on window.__supabasePosts); when
+ *    `supabaseOnline` is false the Supabase POST REJECTS to exercise the offline path. There is
+ *    no PATCH path (anon can't update) — any non-POST voice_captures call is unexpected.
  *  Real Supabase/Gemini are never hit.
  */
 async function installMocks(
@@ -94,14 +101,17 @@ async function installMocks(
           );
         }
         if (url.includes(host) && url.includes('voice_captures')) {
-          const posts = (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts;
           const bodyText = typeof init?.body === 'string' ? init.body : '';
+          // Insert POST (the only voice_captures call — anon is insert-only). Record the body,
+          // then succeed (or reject if offline).
+          const posts = (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts;
           posts.push(bodyText ? JSON.parse(bodyText) : null);
           if (!online) {
-            // Simulate offline: reject so the app falls back to "saved on phone — will sync".
+            // Simulate offline: reject so the app falls back to "saved — will sync".
             return Promise.reject(new TypeError('Failed to fetch'));
           }
-          // Successful insert: anon RLS returns 201 with an empty body (return=minimal).
+          // Successful insert: with Prefer: return=minimal, anon RLS returns 201 + an empty body
+          // (no id read-back — anon has no SELECT).
           return new Response(null, { status: 201 });
         }
         return realFetch(input as RequestInfo, init);
@@ -249,7 +259,7 @@ test.describe('auto-save on transcription (Supabase online)', () => {
     await page.goto('/');
   });
 
-  test('record → stop writes to local history AND POSTs to Supabase, shows "Saved ✓"', async ({
+  test('record → stop saves LOCALLY and shows "Saved ✓" but does NOT POST yet', async ({
     page,
   }) => {
     await page.locator('#record-btn').click();
@@ -259,25 +269,81 @@ test.describe('auto-save on transcription (Supabase online)', () => {
     // Result screen with the canned transcript.
     await expect(page.locator('#transcript')).toHaveValue(FAKE_TRANSCRIPT);
 
-    // The save status resolves to "Saved ✓" once the (mocked) Supabase insert returns 201.
+    // Local save is the guarantee → status is "Saved ✓" immediately (no network involved yet).
     await expect(page.locator('#save-status')).toHaveText('Saved ✓');
 
-    // localStorage history has exactly one item, synced, with the transcript.
+    // localStorage history has exactly one item — saved locally, NOT yet synced (the send is
+    // deferred until she leaves the result screen, so the final tag can ride along in the insert).
     const items = await readHistory(page);
     expect(items).toHaveLength(1);
     expect(items[0].transcript).toBe(FAKE_TRANSCRIPT);
-    expect(items[0].synced).toBe(true);
+    expect(items[0].synced).toBe(false);
     expect(typeof items[0].id).toBe('string');
     expect(typeof items[0].createdAt).toBe('string');
+    // No supabaseId field exists anymore (anon is insert-only — nothing to address later).
+    expect(items[0].supabaseId).toBeUndefined();
 
-    // The Supabase endpoint was actually called with the expected payload shape.
+    // Crucially: NO Supabase POST has happened while she's still on the result screen.
     const posts = await page.evaluate(
       () => (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts
     );
-    expect(posts.length).toBeGreaterThanOrEqual(1);
+    expect(posts).toHaveLength(0);
+  });
+
+  test('leaving the result screen (Record again) NOW fires the POST with source:voice', async ({
+    page,
+  }) => {
+    await page.locator('#record-btn').click();
+    await expect(page.locator('#timer')).toBeVisible();
+    await page.locator('#stop-btn').click();
+    await expect(page.locator('#save-status')).toHaveText('Saved ✓');
+
+    // Still no POST while on the result screen.
+    let posts = await page.evaluate(
+      () => (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts
+    );
+    expect(posts).toHaveLength(0);
+
+    // Leave the result screen → the deferred send fires now.
+    await page.locator('#again-btn').click();
+
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          () => (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts.length
+        )
+      )
+      .toBeGreaterThanOrEqual(1);
+
+    posts = await page.evaluate(
+      () => (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts
+    );
     const first = posts[0] as Record<string, unknown>;
     expect(first.transcript).toBe(FAKE_TRANSCRIPT);
     expect(first.source).toBe('voice');
+
+    // The local item is now marked synced.
+    const items = await readHistory(page);
+    expect(items[0].synced).toBe(true);
+  });
+
+  test('opening History from the result screen also flushes the deferred send', async ({
+    page,
+  }) => {
+    await page.locator('#record-btn').click();
+    await expect(page.locator('#timer')).toBeVisible();
+    await page.locator('#stop-btn').click();
+    await expect(page.locator('#save-status')).toHaveText('Saved ✓');
+
+    await page.locator('#open-history').click();
+
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          () => (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts.length
+        )
+      )
+      .toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -291,19 +357,124 @@ test.describe('auto-save when offline (Supabase rejects)', () => {
     await page.goto('/');
   });
 
-  test('still saves locally and shows "will sync" when the POST fails', async ({ page }) => {
+  test('saves locally; a failed send on leave just leaves it unsynced (retries later)', async ({
+    page,
+  }) => {
     await page.locator('#record-btn').click();
     await expect(page.locator('#timer')).toBeVisible();
     await page.locator('#stop-btn').click();
 
     await expect(page.locator('#transcript')).toHaveValue(FAKE_TRANSCRIPT);
 
-    // Offline: the transcript is never lost — it's in localStorage, marked unsynced.
-    await expect(page.locator('#save-status')).toHaveText('Saved on phone — will sync');
-    const items = await readHistory(page);
+    // Local save is the guarantee regardless of network → "Saved ✓" on the result screen.
+    await expect(page.locator('#save-status')).toHaveText('Saved ✓');
+    let items = await readHistory(page);
     expect(items).toHaveLength(1);
     expect(items[0].transcript).toBe(FAKE_TRANSCRIPT);
     expect(items[0].synced).toBe(false);
+
+    // Leave the result screen → the send is attempted but the (offline) POST rejects, so the
+    // item is never lost — it stays in localStorage, unsynced, to retry next load / next leave.
+    await page.locator('#again-btn').click();
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          () => (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts.length
+        )
+      )
+      .toBeGreaterThanOrEqual(1);
+    items = await readHistory(page);
+    expect(items).toHaveLength(1);
+    expect(items[0].synced).toBe(false);
+  });
+});
+
+test.describe('to-do / thought tagging (result screen)', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(
+      (key: string) => window.localStorage.setItem('voice-capture.gemini-key', key),
+      FAKE_KEY
+    );
+    await installMocks(page); // supabaseOnline = true
+    await page.goto('/');
+  });
+
+  test('tapping To-Do tags the note LOCALLY (no POST yet); leaving sends it with category:todo', async ({
+    page,
+  }) => {
+    await page.locator('#record-btn').click();
+    await expect(page.locator('#timer')).toBeVisible();
+    await page.locator('#stop-btn').click();
+
+    // Result screen, saved locally, tag chips present.
+    await expect(page.locator('#transcript')).toHaveValue(FAKE_TRANSCRIPT);
+    await expect(page.locator('#save-status')).toHaveText('Saved ✓');
+
+    const todoChip = page.locator('.tag-chip[data-tag="todo"]');
+    await expect(todoChip).toBeVisible();
+    await todoChip.click();
+
+    // The chip paints active and the local item now carries category 'todo' — all LOCAL.
+    await expect(page.locator('.tag-chip[data-tag="todo"]')).toHaveClass(/is-active/);
+    const items = await readHistory(page);
+    expect(items[0].category).toBe('todo');
+
+    // No network call has happened yet — the tag is local until the note is sent.
+    let posts = await page.evaluate(
+      () => (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts
+    );
+    expect(posts).toHaveLength(0);
+
+    // Leave the result screen → the deferred send fires, and the chosen tag rides along in the
+    // single INSERT body (category:'todo'). There is no PATCH path.
+    await page.locator('#again-btn').click();
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          () => (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts.length
+        )
+      )
+      .toBeGreaterThanOrEqual(1);
+    posts = await page.evaluate(
+      () => (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts
+    );
+    const first = posts[0] as Record<string, unknown>;
+    expect(first.transcript).toBe(FAKE_TRANSCRIPT);
+    expect(first.source).toBe('voice');
+    expect(first.category).toBe('todo');
+  });
+
+  test('tapping the active To-Do chip again clears the tag locally (insert carries no category)', async ({
+    page,
+  }) => {
+    await page.locator('#record-btn').click();
+    await expect(page.locator('#timer')).toBeVisible();
+    await page.locator('#stop-btn').click();
+    await expect(page.locator('#save-status')).toHaveText('Saved ✓');
+
+    await page.locator('.tag-chip[data-tag="todo"]').click();
+    await expect(page.locator('.tag-chip[data-tag="todo"]')).toHaveClass(/is-active/);
+    // Tap again → unsorted (local).
+    await page.locator('.tag-chip[data-tag="todo"]').click();
+    await expect(page.locator('.tag-chip[data-tag="todo"]')).not.toHaveClass(/is-active/);
+
+    const items = await readHistory(page);
+    expect(items[0].category).toBeUndefined();
+
+    // Leave → the note is sent untagged: the insert body has no `category` key.
+    await page.locator('#again-btn').click();
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          () => (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts.length
+        )
+      )
+      .toBeGreaterThanOrEqual(1);
+    const posts = await page.evaluate(
+      () => (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts
+    );
+    const first = posts[0] as Record<string, unknown>;
+    expect('category' in first).toBe(false);
   });
 });
 
@@ -315,6 +486,15 @@ test.describe('history view', () => {
       createdAt: new Date(Date.now() - 60_000).toISOString(),
       durationSeconds: 12,
       synced: true,
+      category: 'todo',
+    },
+    {
+      id: 'h-middle',
+      transcript: 'Middle thought note',
+      createdAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+      durationSeconds: 8,
+      synced: true,
+      category: 'thought',
     },
     {
       id: 'h-oldest',
@@ -334,7 +514,7 @@ test.describe('history view', () => {
       { key: FAKE_KEY, seed: SEED, histKey: HISTORY_KEY }
     );
     // Online so the seeded unsynced item may flip during the on-load sync; the list still
-    // renders both rows. We assert on counts/text/copy/delete, not on the live dot race.
+    // renders all rows. We assert on counts/text/copy/delete, not on the live dot race.
     await installMocks(page);
     await page.goto('/');
   });
@@ -344,7 +524,7 @@ test.describe('history view', () => {
   }) => {
     await page.locator('#open-history').click();
     await expect(page.locator('.screen-history')).toBeVisible();
-    await expect(page.locator('.history-item')).toHaveCount(2);
+    await expect(page.locator('.history-item')).toHaveCount(3);
     // Newest first: the first row carries the newest item's text.
     await expect(page.locator('.history-item').first().locator('.history-text')).toContainText(
       'Newest note'
@@ -361,12 +541,12 @@ test.describe('history view', () => {
 
   test('delete removes the row from the list and from localStorage', async ({ page }) => {
     await page.locator('#open-history').click();
-    await expect(page.locator('.history-item')).toHaveCount(2);
+    await expect(page.locator('.history-item')).toHaveCount(3);
     // Delete the first (newest) row.
     await page.locator('.history-item').first().locator('.history-delete').click();
-    await expect(page.locator('.history-item')).toHaveCount(1);
+    await expect(page.locator('.history-item')).toHaveCount(2);
     const items = await readHistory(page);
-    expect(items).toHaveLength(1);
+    expect(items).toHaveLength(2);
     expect(items.some((i) => i.id === 'h-newest')).toBe(false);
   });
 
@@ -375,5 +555,113 @@ test.describe('history view', () => {
     await page.locator('#open-history').click();
     await expect(page.locator('.history-empty')).toHaveText('No saved notes yet.');
     await expect(page.locator('.history-item')).toHaveCount(0);
+  });
+
+  test('filter chips show only matching items (To-Do, then Thoughts, then All)', async ({
+    page,
+  }) => {
+    await page.locator('#open-history').click();
+    await expect(page.locator('.history-item')).toHaveCount(3);
+
+    // To-Do filter → only the one 'todo' row.
+    await page.locator('.filter-chip[data-filter="todo"]').click();
+    await expect(page.locator('.history-item')).toHaveCount(1);
+    await expect(page.locator('.history-item').first().locator('.history-text')).toContainText(
+      'Newest note'
+    );
+
+    // Thoughts filter → only the one 'thought' row.
+    await page.locator('.filter-chip[data-filter="thought"]').click();
+    await expect(page.locator('.history-item')).toHaveCount(1);
+    await expect(page.locator('.history-item').first().locator('.history-text')).toContainText(
+      'Middle thought note'
+    );
+
+    // Back to All → all three.
+    await page.locator('.filter-chip[data-filter="all"]').click();
+    await expect(page.locator('.history-item')).toHaveCount(3);
+  });
+
+  test('sort toggle reorders newest ↔ oldest', async ({ page }) => {
+    await page.locator('#open-history').click();
+    // Default newest-first: first row = newest.
+    await expect(page.locator('.history-item').first().locator('.history-text')).toContainText(
+      'Newest note'
+    );
+
+    // Flip to Oldest: first row becomes the oldest.
+    await page.locator('#sort-toggle').click();
+    await expect(page.locator('#sort-toggle')).toContainText('Oldest');
+    await expect(page.locator('.history-item').first().locator('.history-text')).toContainText(
+      'Older note'
+    );
+
+    // Flip back to Newest.
+    await page.locator('#sort-toggle').click();
+    await expect(page.locator('#sort-toggle')).toContainText('Newest');
+    await expect(page.locator('.history-item').first().locator('.history-text')).toContainText(
+      'Newest note'
+    );
+  });
+});
+
+// These two cases need a single, controlled, already-synced item — seeded via addInitScript
+// (so a page reload re-seeds the SAME state, not the multi-item SEED above) and synced=true
+// so the on-load syncPending() never rewrites the store out from under the test.
+test.describe('history tagging + filter empty-state (single seeded item)', () => {
+  const ONE = [
+    {
+      id: 'only',
+      transcript: 'untagged only note',
+      createdAt: new Date().toISOString(),
+      durationSeconds: 4,
+      synced: true,
+    },
+  ];
+
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(
+      ({ key, seed, histKey }: { key: string; seed: unknown; histKey: string }) => {
+        window.localStorage.setItem('voice-capture.gemini-key', key);
+        window.localStorage.setItem(histKey, JSON.stringify(seed));
+      },
+      { key: FAKE_KEY, seed: ONE, histKey: HISTORY_KEY }
+    );
+    await installMocks(page);
+    await page.goto('/');
+  });
+
+  test('a filter with no matches shows its own empty state, not "no saved notes"', async ({
+    page,
+  }) => {
+    await page.locator('#open-history').click();
+    await expect(page.locator('.history-item')).toHaveCount(1);
+    // The one note is untagged → the To-Do filter matches nothing.
+    await page.locator('.filter-chip[data-filter="todo"]').click();
+    await expect(page.locator('.history-item')).toHaveCount(0);
+    await expect(page.locator('.history-empty')).toHaveText('No to-dos yet.');
+  });
+
+  test('tapping a history row tag chip cycles unsorted → To-Do LOCALLY (no network call)', async ({
+    page,
+  }) => {
+    await page.locator('#open-history').click();
+    const chip = page.locator('.history-item').first().locator('.history-tag-chip');
+    await expect(chip).toContainText('Tag');
+    await chip.click();
+    // Cycled to To-Do.
+    await expect(page.locator('.history-item').first().locator('.history-tag-chip')).toContainText(
+      'To-Do'
+    );
+    const items = await readHistory(page);
+    expect(items[0].category).toBe('todo');
+
+    // The seeded note is already synced, and anon can't update — so re-tagging in History is a
+    // LOCAL-only change. No POST fires (it was already sent on a prior pass; this seed starts
+    // synced). Known, accepted v0 limitation: the server row keeps its original tag.
+    const posts = await page.evaluate(
+      () => (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts
+    );
+    expect(posts).toHaveLength(0);
   });
 });
