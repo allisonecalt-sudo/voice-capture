@@ -17,6 +17,6 @@
     "rootDir": ".",
     "lib": ["ES2020", "DOM", "DOM.Iterable"]
   },
-  "include": ["app.ts", "wav.ts", "gemini.ts"],
+  "include": ["app.ts", "wav.ts", "gemini.ts", "supabase.ts", "history.ts"],
   "exclude": ["node_modules", "dist", "tests", "playwright.config.ts"]
 }

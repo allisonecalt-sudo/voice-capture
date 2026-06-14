@@ -75,6 +75,12 @@ body {
   letter-spacing: 0.01em;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .icon-btn {
   background: transparent;
   border: none;
@@ -326,6 +332,19 @@ body {
   outline-offset: 1px;
 }
 
+.save-status {
+  font-size: 0.9rem;
+  font-weight: 600;
+  min-height: 1.2em;
+  margin-top: 2px;
+}
+.save-status.is-saved {
+  color: var(--accent);
+}
+.save-status.is-pending {
+  color: var(--text-dim);
+}
+
 .result-actions {
   display: flex;
   gap: 12px;
@@ -415,6 +434,82 @@ body {
 }
 .back-btn {
   margin-top: 8px;
+}
+
+/* ── History ── */
+.screen-history {
+  justify-content: flex-start;
+  align-items: stretch;
+}
+.history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.history-empty {
+  color: var(--text-dim);
+  font-size: 1rem;
+  text-align: center;
+  padding: 40px 0;
+}
+.history-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+.history-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.history-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.history-time {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.sync-dot {
+  font-size: 0.85rem;
+  line-height: 1;
+}
+.sync-dot.is-synced {
+  color: var(--accent);
+}
+.sync-dot.is-pending {
+  color: var(--text-dim);
+}
+.history-text {
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* Show a calm preview; the row stays tappable to the full text in the textarea elsewhere. */
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.history-actions {
+  display: flex;
+  gap: 10px;
+}
+.history-actions .btn {
+  flex: 1;
+  min-height: 48px;
+  font-size: 1rem;
 }
 
 /* ── Banners ── */

@@ -10,7 +10,7 @@
 // BUILT:  install/activate/fetch with the two strategies above.
 // NEXT:   bump VERSION when shipping a new build.
 
-const VERSION = 'voice-capture-v2';
+const VERSION = 'voice-capture-v3';
 const SHELL_CACHE = `${VERSION}-shell`;
 
 const SHELL_ASSETS = [
@@ -20,6 +20,8 @@ const SHELL_ASSETS = [
   './dist/app.js',
   './dist/wav.js',
   './dist/gemini.js',
+  './dist/supabase.js',
+  './dist/history.js',
   './manifest.webmanifest',
   './icon.svg',
   './icon-192.png',
@@ -72,6 +74,8 @@ function isCodeRequest(url, request) {
     url.pathname.endsWith('/dist/app.js') ||
     url.pathname.endsWith('/dist/wav.js') ||
     url.pathname.endsWith('/dist/gemini.js') ||
+    url.pathname.endsWith('/dist/supabase.js') ||
+    url.pathname.endsWith('/dist/history.js') ||
     url.pathname.endsWith('/index.html')
   );
 }

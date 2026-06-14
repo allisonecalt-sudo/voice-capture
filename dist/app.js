@@ -14,6 +14,7 @@
 // NEXT:   v0 complete. Long-recording File API upload path is deliberately out of scope.
 import { transcribeAudio } from './gemini.js';
 import { TARGET_SAMPLE_RATE, downsampleBuffer, mergeChunks, encodeWav, blobToBase64, wavByteLength, } from './wav.js';
+import { addCapture, deleteCapture, loadHistory, syncPending, } from './history.js';
 // ── Constants ───────────────────────────────────────────────────────────────
 const KEY_STORAGE = 'voice-capture.gemini-key';
 // Inline base64 ceiling. A 16 kHz mono 16-bit WAV is ~32 KB/sec ≈ 1.9 MB/min, and
@@ -28,6 +29,8 @@ const state = {
     error: null,
     copied: false,
     levels: new Array(WAVEFORM_BARS).fill(0),
+    saveStatus: 'none',
+    copiedHistoryId: null,
 };
 // ── Key storage (localStorage only) ─────────────────────────────────────────
 function getKey() {
@@ -148,6 +151,7 @@ async function beginRecording() {
     state.error = null;
     state.transcript = '';
     state.copied = false;
+    state.saveStatus = 'none';
     state.levels = new Array(WAVEFORM_BARS).fill(0);
     recorder = new AudioRecorder();
     recorder.onLevel = (level) => {
@@ -190,6 +194,8 @@ async function finishRecording() {
         window.clearInterval(timerId);
         timerId = null;
     }
+    // Capture the recording length now — the live timer stops counting after this.
+    const durationSeconds = state.elapsedSeconds;
     state.screen = 'transcribing';
     render();
     try {
@@ -199,13 +205,33 @@ async function finishRecording() {
         const transcript = await transcribeAudio(getKey(), base64, 'audio/wav');
         state.transcript = transcript;
         state.screen = 'result';
+        render();
+        // A transcript is a message to Claude: write it to local history FIRST (never lose it),
+        // then try to sync. The status on the result screen reflects whether the sync landed.
+        void autoSave(transcript, durationSeconds);
     }
     catch (err) {
         state.error = err instanceof Error ? err.message : 'Transcription failed. Please try again.';
         state.screen = 'result';
-        console.warn('[voice-capture] transcription error:', err);
+        render();
     }
-    render();
+}
+// ── Auto-save: local history first, then sync to the Claude inbox ─────────────
+async function autoSave(transcript, durationSeconds) {
+    // 1) Always persist locally first — this is the never-lose-a-transcript guarantee.
+    const item = addCapture(transcript, durationSeconds);
+    // 2) Try to push this item (and any earlier unsynced ones) to Supabase.
+    try {
+        await syncPending();
+    }
+    catch {
+        // syncPending swallows per-item failures; this guard is belt-and-suspenders.
+    }
+    // 3) Reflect the result of THIS item on the result screen, if she's still there.
+    const synced = loadHistory().find((h) => h.id === item.id)?.synced ?? false;
+    state.saveStatus = synced ? 'saved' : 'pending';
+    if (state.screen === 'result')
+        updateSaveStatus();
 }
 function cancelRecording() {
     if (timerId !== null) {
@@ -286,6 +312,9 @@ function render() {
         case 'settings':
             el.innerHTML = renderSettings();
             break;
+        case 'history':
+            el.innerHTML = renderHistory();
+            break;
     }
     wireScreen();
 }
@@ -293,7 +322,10 @@ function header() {
     return `
     <header class="app-header">
       <h1>Voice Capture</h1>
-      <button class="icon-btn" id="open-settings" aria-label="Settings" title="Settings">⚙️</button>
+      <div class="header-actions">
+        <button class="icon-btn" id="open-history" aria-label="History" title="History">🕘</button>
+        <button class="icon-btn" id="open-settings" aria-label="Settings" title="Settings">⚙️</button>
+      </div>
     </header>`;
 }
 function renderIdle() {
@@ -371,6 +403,7 @@ function renderResult() {
       <label class="field-label" for="transcript">Transcript</label>
       <textarea class="transcript" id="transcript" dir="auto" spellcheck="false"
                 aria-label="Transcript">${escapeHtml(state.transcript)}</textarea>
+      <p class="save-status ${saveStatusClass()}" id="save-status" aria-live="polite">${saveStatusText()}</p>
       <div class="result-actions">
         <button class="btn btn-primary copy-btn" id="copy-btn">
           ${state.copied ? 'Copied ✓' : 'Copy'}
@@ -378,6 +411,55 @@ function renderResult() {
         <button class="btn btn-secondary" id="again-btn">Record again</button>
       </div>
     </main>`;
+}
+function saveStatusText() {
+    switch (state.saveStatus) {
+        case 'saved':
+            return 'Saved ✓';
+        case 'pending':
+            return 'Saved on phone — will sync';
+        default:
+            return 'Saving…';
+    }
+}
+function saveStatusClass() {
+    return state.saveStatus === 'pending' ? 'is-pending' : 'is-saved';
+}
+function renderHistory() {
+    const items = loadHistory();
+    const list = items.length
+        ? `<ul class="history-list">${items.map(renderHistoryRow).join('')}</ul>`
+        : `<p class="history-empty">No saved notes yet.</p>`;
+    return `
+    ${header()}
+    <main class="screen screen-history">
+      <div class="history-head">
+        <h2 class="settings-title">History</h2>
+      </div>
+      ${list}
+      <button class="btn btn-secondary back-btn" id="history-back-btn">Back</button>
+    </main>`;
+}
+function renderHistoryRow(item) {
+    const copied = state.copiedHistoryId === item.id;
+    const syncDot = item.synced
+        ? '<span class="sync-dot is-synced" title="Synced" aria-label="Synced">✓</span>'
+        : '<span class="sync-dot is-pending" title="Pending sync" aria-label="Pending sync">●</span>';
+    return `
+    <li class="history-item" data-id="${escapeHtml(item.id)}">
+      <div class="history-meta">
+        <span class="history-time">${escapeHtml(relativeTime(item.createdAt))}</span>
+        ${syncDot}
+      </div>
+      <p class="history-text" dir="auto">${escapeHtml(item.transcript)}</p>
+      <div class="history-actions">
+        <button class="btn btn-secondary history-copy" data-id="${escapeHtml(item.id)}">
+          ${copied ? 'Copied ✓' : 'Copy'}
+        </button>
+        <button class="btn btn-ghost history-delete" data-id="${escapeHtml(item.id)}"
+                aria-label="Delete note">Delete</button>
+      </div>
+    </li>`;
 }
 function renderSettings() {
     const key = getKey();
@@ -433,6 +515,14 @@ function updateCopiedState() {
     if (btn)
         btn.textContent = state.copied ? 'Copied ✓' : 'Copy';
 }
+function updateSaveStatus() {
+    const el = document.getElementById('save-status');
+    if (!el)
+        return;
+    el.textContent = saveStatusText();
+    el.classList.remove('is-saved', 'is-pending');
+    el.classList.add(saveStatusClass());
+}
 function barHeight(level) {
     // Map 0..1 → 8..100% so even silence shows a baseline bar.
     return Math.round(8 + level * 92);
@@ -441,6 +531,11 @@ function barHeight(level) {
 function wireScreen() {
     document.getElementById('open-settings')?.addEventListener('click', () => {
         state.screen = 'settings';
+        render();
+    });
+    document.getElementById('open-history')?.addEventListener('click', () => {
+        state.copiedHistoryId = null;
+        state.screen = 'history';
         render();
     });
     if (state.screen === 'idle') {
@@ -504,6 +599,58 @@ function wireScreen() {
             render();
         });
     }
+    if (state.screen === 'history') {
+        document.getElementById('history-back-btn')?.addEventListener('click', () => {
+            state.copiedHistoryId = null;
+            state.screen = 'idle';
+            render();
+        });
+        document.querySelectorAll('.history-copy').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const id = btn.dataset.id;
+                if (id)
+                    void copyHistoryItem(id);
+            });
+        });
+        document.querySelectorAll('.history-delete').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const id = btn.dataset.id;
+                if (!id)
+                    return;
+                deleteCapture(id);
+                if (state.copiedHistoryId === id)
+                    state.copiedHistoryId = null;
+                render();
+            });
+        });
+    }
+}
+async function copyHistoryItem(id) {
+    const item = loadHistory().find((h) => h.id === id);
+    if (!item)
+        return;
+    try {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(item.transcript);
+        }
+        else {
+            legacyCopy(item.transcript);
+        }
+        state.copiedHistoryId = id;
+        render();
+        window.setTimeout(() => {
+            if (state.copiedHistoryId === id) {
+                state.copiedHistoryId = null;
+                if (state.screen === 'history')
+                    render();
+            }
+        }, 2000);
+    }
+    catch (err) {
+        state.error = 'Could not copy automatically — long-press the text to copy it manually.';
+        render();
+        console.warn('[voice-capture] history clipboard error:', err);
+    }
 }
 function readTranscriptFromTextarea() {
     const ta = document.getElementById('transcript');
@@ -518,5 +665,32 @@ function escapeHtml(str) {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
 }
+/** Short, human relative timestamp ("just now", "5m ago", "3h ago", "2d ago", or a date). */
+function relativeTime(iso) {
+    const then = Date.parse(iso);
+    if (Number.isNaN(then))
+        return '';
+    const diffSec = Math.max(0, Math.round((Date.now() - then) / 1000));
+    if (diffSec < 45)
+        return 'just now';
+    const diffMin = Math.round(diffSec / 60);
+    if (diffMin < 60)
+        return `${diffMin}m ago`;
+    const diffHr = Math.round(diffMin / 60);
+    if (diffHr < 24)
+        return `${diffHr}h ago`;
+    const diffDay = Math.round(diffHr / 24);
+    if (diffDay < 7)
+        return `${diffDay}d ago`;
+    return new Date(then).toLocaleDateString();
+}
 // ── Boot ─────────────────────────────────────────────────────────────────────
 render();
+// On load, flush any transcripts that were saved locally but never reached the inbox
+// (e.g. recorded while offline). Failures stay unsynced and retry next load — fire and
+// forget so a slow/absent network never blocks the UI.
+void syncPending().then((n) => {
+    // If she's looking at History when a backlog clears, refresh the sync dots.
+    if (n > 0 && state.screen === 'history')
+        render();
+});
