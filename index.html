@@ -4,12 +4,13 @@
   WHAT: the single HTML page for the voice-capture app (record → transcribe → copy).
   WHY:  Allison loses long voice dumps when a keyboard mic silently stops; this app
         makes "it's recording" impossible to miss, then hands her a copyable transcript.
-  DECIDED: lang=he + dir=rtl (her apps are Hebrew RTL); mixed He/En transcript uses
-           dir="auto" on the output. No backend — pure static. Key in localStorage only.
+  DECIDED: lang=en + dir=ltr (her request — this personal tool's UI is English; the
+           Hebrew-RTL default is for her clinical apps). Mixed He/En *transcript* still
+           works via dir="auto" on the output. No backend — pure static. Key in localStorage only.
   BUILT:  empty #app mounted by dist/app.js; PWA manifest + service worker registered.
   NEXT:   none for v0 — flow is complete. (Public deploy is a separate confirmed step.)
 -->
-<html lang="he" dir="rtl">
+<html lang="en" dir="ltr">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />

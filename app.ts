@@ -337,7 +337,7 @@ function renderIdle(): string {
     : '';
   const keyPrompt = keyMissing
     ? `<div class="card key-prompt" id="key-prompt">
-         <p class="key-prompt-title">צריך מפתח Gemini פעם אחת</p>
+         <p class="key-prompt-title">One-time Gemini key needed</p>
          <p class="key-prompt-body">
            This app sends your recording straight to Google Gemini to transcribe it.
            You need a free API key (kept only on this phone).
@@ -355,7 +355,7 @@ function renderIdle(): string {
                 ${keyMissing ? 'disabled aria-disabled="true"' : ''}
                 aria-label="Start recording">
           <span class="record-dot"></span>
-          <span class="record-label">הקלטה</span>
+          <span class="record-label">Record</span>
         </button>
         <p class="record-hint">Tap to record. Tap again to stop and transcribe.</p>
       </div>
@@ -376,12 +376,12 @@ function renderRecording(): string {
         ${state.levels.map((l) => `<span class="wave-bar" style="height:${barHeight(l)}%"></span>`).join('')}
       </div>
       <p class="limit-warning" id="limit-warning" hidden>
-        ההקלטה מתארכת — כדאי לעצור ולשלוח בקרוב (גבול ~10 דק׳).
+        Recording is getting long — stop and send soon (~10 min limit).
       </p>
       <div class="record-stage">
         <button class="record-btn is-recording" id="stop-btn" aria-label="Stop recording">
           <span class="stop-square"></span>
-          <span class="record-label">עצירה</span>
+          <span class="record-label">Stop</span>
         </button>
         <p class="record-hint">Recording… mic is ON. Tap to stop &amp; transcribe.</p>
         <button class="btn btn-ghost" id="cancel-btn">Cancel</button>
@@ -394,7 +394,7 @@ function renderTranscribing(): string {
     ${header()}
     <main class="screen screen-transcribing">
       <div class="spinner" role="status" aria-live="polite" aria-label="Transcribing"></div>
-      <p class="transcribing-text">מתמלל… שולח ל-Gemini</p>
+      <p class="transcribing-text">Transcribing… sending to Gemini</p>
       <p class="record-hint">Don't close the app — this takes a few seconds.</p>
     </main>`;
 }

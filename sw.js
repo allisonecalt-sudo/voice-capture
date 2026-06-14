@@ -10,7 +10,7 @@
 // BUILT:  install/activate/fetch with the two strategies above.
 // NEXT:   bump VERSION when shipping a new build.
 
-const VERSION = 'voice-capture-v1';
+const VERSION = 'voice-capture-v2';
 const SHELL_CACHE = `${VERSION}-shell`;
 
 const SHELL_ASSETS = [
