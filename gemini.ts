@@ -3,14 +3,16 @@
 //       key, and parses the transcript out of the response JSON.
 // WHY:  isolating the network shape here keeps app.ts about UI/state, and lets the
 //       Playwright tests mock `transcribeAudio` / the fetch without a real key or mic.
-// DECIDED: model = gemini-2.0-flash (fast, free-tier, strong multilingual). Key travels
-//          phone → Google only; never stored anywhere but localStorage; never logged.
-//          Verbatim He/En prompt — do NOT translate. Output = transcript text only.
+// DECIDED: model = gemini-2.5-flash (fast, multimodal/audio, strong multilingual). Picked
+//          2026-06-14 after live-testing Allison's key: gemini-2.0-flash returned
+//          free-tier "limit: 0" for her account, while 2.5-flash returns 200 on her free
+//          tier. Key travels phone → Google only; never stored anywhere but localStorage;
+//          never logged. Verbatim He/En prompt — do NOT translate. Output = transcript only.
 // BUILT:  TRANSCRIBE_PROMPT, GEMINI_ENDPOINT, transcribeAudio(), parseTranscript().
 // NEXT:   v0 is inline-only (≤~10 min). If longer dumps become routine, add the Gemini
 //         File API upload path — deliberately out of scope for now.
 
-export const GEMINI_MODEL = 'gemini-2.0-flash';
+export const GEMINI_MODEL = 'gemini-2.5-flash';
 
 export const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
