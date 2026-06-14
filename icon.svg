@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Voice Capture">
+  <rect width="512" height="512" rx="96" fill="#1a1f1c"/>
+  <!-- Minimal microphone mark, centered, soft teal accent on dark (matches workout-tracker palette) -->
+  <g fill="none" stroke="#5eead4" stroke-width="24" stroke-linecap="round" stroke-linejoin="round">
+    <!-- mic capsule -->
+    <rect x="208" y="120" width="96" height="176" rx="48" fill="#5eead4" stroke="none"/>
+    <!-- pickup arc -->
+    <path d="M168 248 a88 88 0 0 0 176 0"/>
+    <!-- stem -->
+    <line x1="256" y1="336" x2="256" y2="392"/>
+    <!-- base -->
+    <line x1="200" y1="392" x2="312" y2="392"/>
+  </g>
+</svg>

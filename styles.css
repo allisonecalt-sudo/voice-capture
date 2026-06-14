@@ -1,0 +1,439 @@
+/*
+  styles.css — Voice Capture
+  WHAT: the calm, dark, one-handed mobile styling for the record → transcribe → copy flow.
+  WHY:  her north-star apps (workout-tracker, budget-2026) are "clean, organized, calm
+        cards, not too insane" — one primary action visible at a time, big touch targets.
+  DECIDED: dark teal-on-charcoal palette (matches workout-tracker icon: #1a1f1c + #5eead4).
+        Record button is huge and unmistakable; recording state screams ON (pulse + red
+        pill + big mm:ss + live waveform). RTL base; transcript uses dir=auto.
+  BUILT:  tokens, header, record stage, recording indicator/waveform, spinner, result,
+        settings. Sized for a Pixel 7 Pro (~412×892 dp), one-handed.
+  NEXT:   none for v0.
+*/
+
+:root {
+  --bg: #1a1f1c;
+  --surface: #232a26;
+  --surface-2: #2b332e;
+  --border: #38423b;
+  --text: #e8efe9;
+  --text-dim: #9fb0a4;
+  --accent: #5eead4;
+  --accent-press: #34d3b8;
+  --danger: #f87171;
+  --danger-deep: #b91c1c;
+  --radius: 18px;
+  --radius-lg: 28px;
+  --tap: 56px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    'Noto Sans Hebrew',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.5;
+}
+
+#app {
+  min-height: 100%;
+  max-width: 560px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+}
+
+/* ── Header ── */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px 6px;
+}
+
+.app-header h1 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 1.4rem;
+  width: var(--tap);
+  height: var(--tap);
+  border-radius: 50%;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.icon-btn:active {
+  background: var(--surface);
+}
+
+/* ── Screen layout ── */
+.screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding: 16px 20px 32px;
+}
+
+.screen-idle,
+.screen-recording,
+.screen-transcribing {
+  justify-content: center;
+}
+
+/* ── Cards ── */
+.card {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+
+/* ── No-key prompt ── */
+.key-prompt-title {
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.key-prompt-body {
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  margin-bottom: 14px;
+}
+
+/* ── Record stage ── */
+.record-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.record-btn {
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: #0c2620;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  cursor: pointer;
+  box-shadow: 0 10px 30px rgba(94, 234, 212, 0.25);
+  transition:
+    transform 0.08s ease,
+    background 0.2s ease;
+}
+.record-btn:active {
+  transform: scale(0.97);
+  background: var(--accent-press);
+}
+.record-btn.is-disabled {
+  background: var(--surface-2);
+  color: var(--text-dim);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.record-dot {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--danger-deep);
+}
+
+.record-label {
+  font-size: 1.3rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.record-hint {
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  text-align: center;
+  max-width: 28ch;
+}
+
+/* ── Recording state: unmistakable ON ── */
+.record-btn.is-recording {
+  background: var(--danger);
+  color: #2a0606;
+  box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.6);
+  animation: pulse 1.4s ease-out infinite;
+}
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 36px rgba(248, 113, 113, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(248, 113, 113, 0);
+  }
+}
+
+.stop-square {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  background: #2a0606;
+}
+
+.recording-indicator {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.rec-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--danger-deep);
+  color: #fff;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 0.95rem;
+}
+
+.rec-blink {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  animation: blink 1s steps(2, start) infinite;
+}
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+.timer {
+  font-variant-numeric: tabular-nums;
+  font-size: 3.2rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  font-family: 'SFMono-Regular', ui-monospace, 'Roboto Mono', monospace;
+}
+
+/* ── Live waveform ── */
+.waveform {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 96px;
+  width: 100%;
+  max-width: 360px;
+  direction: ltr; /* bars flow left→right regardless of page RTL */
+}
+.wave-bar {
+  flex: 1;
+  min-width: 3px;
+  background: var(--accent);
+  border-radius: 3px;
+  height: 8%;
+  transition: height 0.09s linear;
+}
+
+.limit-warning {
+  color: var(--danger);
+  font-size: 0.9rem;
+  text-align: center;
+  max-width: 32ch;
+}
+
+/* ── Transcribing spinner ── */
+.spinner {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 6px solid var(--surface-2);
+  border-top-color: var(--accent);
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.transcribing-text {
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+/* ── Result ── */
+.screen-result {
+  justify-content: flex-start;
+  align-items: stretch;
+}
+.field-label {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.transcript {
+  width: 100%;
+  min-height: 320px;
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 1.05rem;
+  line-height: 1.6;
+  padding: 16px;
+  resize: vertical;
+  font-family: inherit;
+}
+.transcript:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.result-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+/* ── Buttons ── */
+.btn {
+  min-height: var(--tap);
+  border-radius: 14px;
+  border: none;
+  font-size: 1.05rem;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.btn:active {
+  transform: scale(0.98);
+}
+.btn-primary {
+  background: var(--accent);
+  color: #0c2620;
+  flex: 1;
+}
+.btn-primary:active {
+  background: var(--accent-press);
+}
+.copy-btn {
+  font-size: 1.15rem;
+}
+.btn-secondary {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  flex: 1;
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+
+/* ── Settings ── */
+.screen-settings {
+  justify-content: flex-start;
+  align-items: stretch;
+}
+.settings-title {
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+.text-input {
+  width: 100%;
+  min-height: var(--tap);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  font-size: 1.05rem;
+  padding: 0 14px;
+  margin: 8px 0 6px;
+}
+.text-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.settings-help {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  margin: 6px 0 14px;
+}
+.settings-help a {
+  color: var(--accent);
+}
+.settings-actions {
+  display: flex;
+  gap: 12px;
+}
+.settings-status {
+  color: var(--accent);
+  font-size: 0.9rem;
+  min-height: 1.2em;
+  margin-top: 10px;
+}
+.back-btn {
+  margin-top: 8px;
+}
+
+/* ── Banners ── */
+.error-banner {
+  width: 100%;
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid var(--danger);
+  color: #fecaca;
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 0.95rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .record-btn.is-recording,
+  .rec-blink,
+  .spinner,
+  .wave-bar {
+    animation: none !important;
+    transition: none !important;
+  }
+}

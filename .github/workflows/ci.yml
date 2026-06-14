@@ -1,0 +1,41 @@
+name: CI
+
+# Lint -> build -> test on every push/PR. Deploy job intentionally omitted for now:
+# this app is LOCAL-ONLY until Allison confirms a public repo + GitHub Pages step.
+# When she does, copy the `deploy` job from workout-tracker/.github/workflows/ci.yml.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install
+        run: npm ci
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Test
+        run: npm run test:ci

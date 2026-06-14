@@ -1,0 +1,7 @@
+node_modules/
+# dist/ is intentionally tracked — GitHub Pages serves the compiled JS directly (no build step on Pages).
+test-results/
+playwright-report/
+.DS_Store
+*.log
+.env
