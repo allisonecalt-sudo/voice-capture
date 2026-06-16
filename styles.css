@@ -192,6 +192,13 @@ body {
   max-width: 28ch;
 }
 
+/* Secondary hint for the share-from-WhatsApp path — quieter than the primary record hint. */
+.record-hint-share {
+  font-size: 0.85rem;
+  opacity: 0.75;
+  margin-top: -0.4rem;
+}
+
 /* ── Recording state: unmistakable ON ── */
 .record-btn.is-recording {
   background: var(--danger);

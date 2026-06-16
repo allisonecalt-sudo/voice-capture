@@ -191,6 +191,39 @@ test.describe('with a saved key', () => {
     await expect(page.locator('#copy-btn')).toHaveText('Copied ✓');
   });
 
+  test('shared WhatsApp voice note (Web Share Target) is picked up and transcribed', async ({
+    page,
+  }) => {
+    // Simulate what the service worker's handleShareTarget does on a share: park the audio file
+    // in the hand-off cache under the agreed key, with its mime + filename in headers.
+    await page.evaluate(async () => {
+      const cache = await caches.open('voice-capture-share');
+      const headers = new Headers();
+      headers.set('Content-Type', 'audio/ogg');
+      headers.set('X-Shared-Filename', encodeURIComponent('PTT-20260616-WA0001.opus'));
+      const audio = new Blob([new Uint8Array([1, 2, 3, 4])], { type: 'audio/ogg' });
+      await cache.put('shared-audio', new Response(audio, { headers }));
+    });
+
+    // Open the app the way the SW's 303 redirect does after a share.
+    await page.goto('/?shared=1');
+
+    // Runs the SAME transcribe → result path a recording uses (Gemini is mocked → canned text).
+    const ta = page.locator('#transcript');
+    await expect(ta).toBeVisible();
+    await expect(ta).toHaveValue(FAKE_TRANSCRIPT);
+
+    // One-shot: the cached share is consumed so a refresh can't re-transcribe it...
+    const leftover = await page.evaluate(async () => {
+      const cache = await caches.open('voice-capture-share');
+      return (await cache.match('shared-audio')) ? 'present' : 'gone';
+    });
+    expect(leftover).toBe('gone');
+
+    // ...and the ?shared flag is stripped from the URL so a reload is a normal open.
+    expect(new URL(page.url()).search).toBe('');
+  });
+
   test('settings saves a pasted key and returns to idle without the prompt', async ({ page }) => {
     await page.locator('#open-settings').click();
     await page.locator('#api-key').fill('AIzaANOTHER-key-9999');

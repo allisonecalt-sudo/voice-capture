@@ -16,6 +16,8 @@
 //          insert-only — no update path). The Supabase SEND is deferred until she LEAVES the
 //          result screen, so the final tag rides along in the insert. History filter
 //          (All / To-Do / Thoughts) + sort (Newest / Oldest), pure client-side.
+//          Plus a Web Share Target path: a WhatsApp voice note shared INTO the app is picked up
+//          (ingestSharedAudio) and run through the SAME Gemini → inbox tail (transcribeBlob).
 // NEXT:   v0 complete. Long-recording File API upload path is deliberately out of scope.
 import { transcribeAudio } from './gemini.js';
 import { TARGET_SAMPLE_RATE, downsampleBuffer, mergeChunks, encodeWav, blobToBase64, wavByteLength, } from './wav.js';
@@ -27,6 +29,9 @@ const KEY_STORAGE = 'voice-capture.gemini-key';
 const SOFT_LIMIT_SECONDS = 10 * 60; // start nudging her to stop
 const HARD_LIMIT_SECONDS = 12 * 60; // auto-stop to protect the payload
 const WAVEFORM_BARS = 32;
+// Web Share Target hand-off — must match the names the service worker uses in handleShareTarget.
+const SHARE_CACHE = 'voice-capture-share';
+const SHARE_ITEM_KEY = 'shared-audio';
 const state = {
     screen: 'idle',
     elapsedSeconds: 0,
@@ -207,11 +212,33 @@ async function finishRecording() {
     const durationSeconds = state.elapsedSeconds;
     state.screen = 'transcribing';
     render();
+    let wavBlob;
     try {
-        const wavBlob = await recorder.stop();
+        wavBlob = await recorder.stop();
+    }
+    catch (err) {
         recorder = null;
-        const base64 = await blobToBase64(wavBlob);
-        const transcript = await transcribeAudio(getKey(), base64, 'audio/wav');
+        state.error = err instanceof Error ? err.message : 'Recording failed. Please try again.';
+        state.screen = 'result';
+        render();
+        return;
+    }
+    recorder = null;
+    await transcribeBlob(wavBlob, 'audio/wav', durationSeconds);
+}
+/**
+ * Shared transcription tail used by BOTH a mic recording (16 kHz WAV) and a shared WhatsApp
+ * voice note (ogg/opus, etc.). Sends the audio to Gemini, shows the transcript, and saves it
+ * locally — the inbox/Save path is identical for both sources.
+ *   @param mimeType        Gemini audio type ('audio/wav' for a recording; normalizeAudioMime() for a share)
+ *   @param durationSeconds recording length for the History label; 0 when unknown (shares)
+ */
+async function transcribeBlob(blob, mimeType, durationSeconds) {
+    state.screen = 'transcribing';
+    render();
+    try {
+        const base64 = await blobToBase64(blob);
+        const transcript = await transcribeAudio(getKey(), base64, mimeType);
         state.transcript = transcript;
         state.screen = 'result';
         render();
@@ -224,6 +251,81 @@ async function finishRecording() {
         state.error = err instanceof Error ? err.message : 'Transcription failed. Please try again.';
         state.screen = 'result';
         render();
+    }
+}
+// ── Share target: a WhatsApp voice note shared INTO the app ───────────────────
+/**
+ * Pick up a voice note that was shared into the app from another app (Android: long-press a
+ * WhatsApp voice note → Share → Voice Capture). The service worker has already stashed the audio
+ * in SHARE_CACHE and redirected here with ?shared=1; we read it back out and run the SAME
+ * Gemini → inbox path a recording uses. One-shot: the cached file is deleted on pickup and the
+ * ?shared flag is stripped, so a refresh can't re-transcribe a stale share.
+ */
+async function ingestSharedAudio() {
+    const params = new URLSearchParams(location.search);
+    if (!params.has('shared'))
+        return;
+    // Strip the flag immediately so a reload doesn't try to re-ingest.
+    history.replaceState(null, '', location.pathname);
+    let res;
+    try {
+        const cache = await caches.open(SHARE_CACHE);
+        res = (await cache.match(SHARE_ITEM_KEY)) ?? undefined;
+        await cache.delete(SHARE_ITEM_KEY); // one-shot
+    }
+    catch {
+        // Cache API unavailable (e.g. insecure origin) — nothing to ingest.
+        return;
+    }
+    if (!res)
+        return;
+    if (!hasKey()) {
+        // No key yet → can't transcribe. Send her to Settings with a clear next step.
+        state.error = 'Add your Gemini key in Settings, then share the voice note again.';
+        state.screen = 'settings';
+        render();
+        return;
+    }
+    const blob = await res.blob();
+    const filename = decodeURIComponent(res.headers.get('X-Shared-Filename') ?? '');
+    const mimeType = normalizeAudioMime(res.headers.get('Content-Type') ?? blob.type, filename);
+    // Duration is unknown for a shared file (no decode) → 0; History just shows no length.
+    await transcribeBlob(blob, mimeType, 0);
+}
+/**
+ * Map a shared file's reported type (often empty, or an opus alias) to a mime Gemini's inline
+ * audio accepts (wav/mp3/aiff/aac/ogg/flac). WhatsApp voice notes are ogg-opus → audio/ogg, which
+ * is also the fallback. Uses the file extension when the type is missing/unhelpful.
+ */
+function normalizeAudioMime(rawType, filename) {
+    const t = rawType.toLowerCase().split(';')[0].trim();
+    if (t === 'audio/opus' || t === 'audio/x-opus+ogg' || t === 'application/ogg')
+        return 'audio/ogg';
+    if (t === 'audio/mpeg')
+        return 'audio/mp3';
+    const geminiOk = ['audio/wav', 'audio/mp3', 'audio/aiff', 'audio/aac', 'audio/ogg', 'audio/flac'];
+    if (geminiOk.includes(t))
+        return t;
+    switch (filename.toLowerCase().split('.').pop() ?? '') {
+        case 'opus':
+        case 'ogg':
+            return 'audio/ogg';
+        case 'mp3':
+        case 'mpeg':
+            return 'audio/mp3';
+        case 'm4a':
+        case 'aac':
+        case 'mp4':
+            return 'audio/aac';
+        case 'wav':
+            return 'audio/wav';
+        case 'flac':
+            return 'audio/flac';
+        case 'aiff':
+        case 'aif':
+            return 'audio/aiff';
+        default:
+            return 'audio/ogg'; // WhatsApp's format — the most likely share
     }
 }
 // ── Save: local history is the guarantee; the Supabase send happens on leave ──
@@ -391,6 +493,7 @@ function renderIdle() {
           <span class="record-label">Record</span>
         </button>
         <p class="record-hint">Tap to record. Tap again to stop and transcribe.</p>
+        <p class="record-hint record-hint-share">Or share a WhatsApp voice note to this app.</p>
       </div>
     </main>`;
 }
@@ -836,6 +939,9 @@ function relativeTime(iso) {
 }
 // ── Boot ─────────────────────────────────────────────────────────────────────
 render();
+// If we were opened by a Web Share (a WhatsApp voice note shared into the app), pick the audio
+// up and transcribe it. No-op on a normal open (no ?shared flag).
+void ingestSharedAudio();
 // On load, flush any transcripts that were saved locally but never reached the inbox
 // (e.g. recorded while offline, or left a previous session unsent). Failures stay unsynced
 // and retry next load — fire and forget so a slow/absent network never blocks the UI.

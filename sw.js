@@ -7,11 +7,22 @@
 // DECIDED: code (HTML + dist/app.js + modules) network-first so a stale build can't
 //          strand her; CSS/icons/manifest cache-first. generativelanguage.googleapis.com
 //          is never touched by the SW.
-// BUILT:  install/activate/fetch with the two strategies above.
+// ALSO:   Web Share Target — a WhatsApp voice note shared into the app POSTs to ./share-target;
+//          the SW catches that POST, parks the file in SHARE_CACHE, and redirects to ?shared=1
+//          (GitHub Pages has no server to receive the POST itself).
+// BUILT:  install/activate/fetch with the two strategies above + handleShareTarget().
 // NEXT:   bump VERSION when shipping a new build.
 
-const VERSION = 'voice-capture-v4';
+const VERSION = 'voice-capture-v5';
 const SHELL_CACHE = `${VERSION}-shell`;
+
+// Web Share Target hand-off cache. When a voice note is shared INTO the app (Android:
+// long-press a WhatsApp voice note → Share → Voice Capture), GitHub Pages has no server to
+// POST to — so this SW catches the POST, stashes the audio file here, and redirects the app
+// to ?shared=1, which reads it back out. Fixed name (NOT version-suffixed) so the page can
+// always find it; explicitly preserved across activate() cache cleanup below.
+const SHARE_CACHE = 'voice-capture-share';
+const SHARE_ITEM_KEY = 'shared-audio';
 
 const SHELL_ASSETS = [
   './',
@@ -49,7 +60,10 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     (async () => {
       const keys = await caches.keys();
-      await Promise.all(keys.filter((k) => k !== SHELL_CACHE).map((k) => caches.delete(k)));
+      // Keep the current shell cache AND the share hand-off cache; drop stale shells.
+      await Promise.all(
+        keys.filter((k) => k !== SHELL_CACHE && k !== SHARE_CACHE).map((k) => caches.delete(k))
+      );
       await self.clients.claim();
     })()
   );
@@ -82,8 +96,16 @@ function isCodeRequest(url, request) {
 
 self.addEventListener('fetch', (event) => {
   const { request } = event;
-  if (request.method.toUpperCase() !== 'GET') return; // Gemini POST etc. passthrough
   const url = new URL(request.url);
+
+  // Web Share Target: a shared voice note arrives as a multipart POST to ./share-target.
+  // Catch it, stash the file, and redirect into the app — must run BEFORE the GET-only guard.
+  if (request.method.toUpperCase() === 'POST' && url.pathname.endsWith('/share-target')) {
+    event.respondWith(handleShareTarget(request));
+    return;
+  }
+
+  if (request.method.toUpperCase() !== 'GET') return; // Gemini POST etc. passthrough
 
   // Never intercept the Gemini API — always live.
   if (url.hostname.endsWith('generativelanguage.googleapis.com')) return;
@@ -112,6 +134,30 @@ async function handleCodeNetworkFirst(request) {
     }
     throw err;
   }
+}
+
+// Web Share Target receiver. Reads the shared audio file out of the multipart POST, parks it
+// in SHARE_CACHE under a known key (with its original mime + filename in headers so the app can
+// pick the right Gemini audio type), then 303-redirects so the browser turns the POST into a GET
+// navigation to ./index.html?shared=1. The app's ingestSharedAudio() takes it from there.
+async function handleShareTarget(request) {
+  try {
+    const formData = await request.formData();
+    const file = formData.get('audio');
+    if (file && typeof file !== 'string') {
+      const cache = await caches.open(SHARE_CACHE);
+      const headers = new Headers();
+      headers.set('Content-Type', file.type || 'application/octet-stream');
+      headers.set('X-Shared-Filename', encodeURIComponent(file.name || 'voice-note'));
+      await cache.put(SHARE_ITEM_KEY, new Response(file, { headers }));
+    }
+  } catch (err) {
+    // Malformed share / cache failure: fall through to the redirect; the app will simply
+    // find nothing to ingest rather than getting stranded on a dead POST.
+    console.warn('[SW] share-target ingest failed', err);
+  }
+  const redirectUrl = new URL('index.html?shared=1', self.registration.scope).href;
+  return Response.redirect(redirectUrl, 303);
 }
 
 async function handleShell(request) {

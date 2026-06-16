@@ -28,6 +28,9 @@ record button, and a live waveform — so she never again talks for ten minutes 
 - `wav.ts` — PCM → 16 kHz mono WAV encoder + base64 helper.
 - `gemini.ts` — the `generateContent` request + response parser.
 - `sw.js` + `manifest.webmanifest` + icons — installable PWA (shell cached; Gemini always live).
+  Also a **Web Share Target**: a voice note shared INTO the app (e.g. from WhatsApp) POSTs to
+  `./share-target`; the SW catches it, parks the file in a cache, and redirects to `?shared=1`,
+  which `app.ts` (`ingestSharedAudio`) reads back and transcribes via the same path as a recording.
 - `tests/app.spec.ts` — Playwright, fully mocked (no real mic / key / API).
 - `.github/workflows/ci.yml` — lint → build → test.
 
@@ -47,6 +50,13 @@ upload path (currently inline-only).
 3. Tap **עצירה / Stop** when done. It sends the audio to Gemini and shows a spinner.
 4. The transcript appears in an editable box. Fix anything you want.
 5. Tap **Copy** (it says "Copied ✓"), then paste into Claude.
+
+### Or: share a WhatsApp voice note (no recording)
+
+1. In WhatsApp, **long-press** the voice note → **Share** → pick **Voice Capture**.
+2. The app opens, transcribes it automatically, and (like a recording) saves it to the inbox.
+   _Note: the share target only appears once the PWA is installed and opened at least once after
+   this update; needs a network connection to transcribe._
 
 ## Limits
 
