@@ -68,13 +68,14 @@ function isHistoryItem(value) {
  * Writes to localStorage immediately — this is the never-lose-it guarantee. Syncing is
  * the caller's next step (addCapture does NOT touch the network).
  */
-export function addCapture(transcript, durationSeconds) {
+export function addCapture(transcript, durationSeconds, source = 'voice') {
     const item = {
         id: newId(),
         transcript,
         createdAt: new Date().toISOString(),
         durationSeconds,
         synced: false,
+        source,
     };
     const items = loadHistory();
     items.unshift(item);
@@ -85,6 +86,16 @@ export function addCapture(transcript, durationSeconds) {
 export function deleteCapture(id) {
     const items = loadHistory().filter((i) => i.id !== id);
     saveHistory(items);
+}
+/** Wipe the entire local log (localStorage only — never touches Supabase; anon can't delete
+ *  the inbox rows anyway, and Claude clears those server-side after routing). */
+export function clearHistory() {
+    try {
+        localStorage.removeItem(HISTORY_KEY);
+    }
+    catch {
+        // storage disabled — nothing we can do; the next saveHistory will overwrite anyway.
+    }
 }
 /**
  * Set (or clear, with null) the routing tag on a local history item and return the updated
@@ -122,7 +133,7 @@ export async function syncPending() {
         if (item.synced)
             continue;
         try {
-            await saveCapture(item.transcript, item.durationSeconds, item.category);
+            await saveCapture(item.transcript, item.durationSeconds, item.category, item.source);
             item.synced = true;
             syncedCount++;
         }

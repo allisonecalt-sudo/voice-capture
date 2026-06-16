@@ -34,9 +34,14 @@ export const SUPABASE_ANON_KEY =
 // at insert time (anon can't change it afterward).
 export type Category = 'todo' | 'thought';
 
+// How the capture entered the app: a spoken+transcribed note ('voice') or one she typed
+// straight in ('text'). Claude can treat them differently — typed text is trustworthy as-is,
+// a voice transcript may carry mishears. Stored in the row's `source` column.
+export type CaptureSource = 'voice' | 'text';
+
 interface CapturePayload {
   transcript: string;
-  source: 'voice';
+  source: CaptureSource;
   duration_seconds?: number;
   category?: Category;
 }
@@ -53,9 +58,10 @@ interface CapturePayload {
 export async function saveCapture(
   transcript: string,
   durationSeconds?: number,
-  category?: Category
+  category?: Category,
+  source: CaptureSource = 'voice'
 ): Promise<void> {
-  const payload: CapturePayload = { transcript, source: 'voice' };
+  const payload: CapturePayload = { transcript, source };
   if (typeof durationSeconds === 'number' && Number.isFinite(durationSeconds)) {
     payload.duration_seconds = Math.round(durationSeconds);
   }

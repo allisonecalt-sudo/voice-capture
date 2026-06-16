@@ -35,8 +35,8 @@ export const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiO
  * @param category         optional routing tag ('todo' | 'thought'); omitted when undefined
  * @throws on any non-2xx (or network failure) so the caller can mark it "will sync".
  */
-export async function saveCapture(transcript, durationSeconds, category) {
-    const payload = { transcript, source: 'voice' };
+export async function saveCapture(transcript, durationSeconds, category, source = 'voice') {
+    const payload = { transcript, source };
     if (typeof durationSeconds === 'number' && Number.isFinite(durationSeconds)) {
         payload.duration_seconds = Math.round(durationSeconds);
     }

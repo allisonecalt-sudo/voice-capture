@@ -17,7 +17,7 @@
 // BUILT:  HistoryItem type, load/save store, addCapture, deleteCapture, setCategory, syncPending.
 // NEXT:   none — stable. If history ever needs cross-device, that's an authed read surface.
 
-import { saveCapture, type Category } from './supabase.js';
+import { saveCapture, type Category, type CaptureSource } from './supabase.js';
 
 const HISTORY_KEY = 'vc.history';
 const MAX_ITEMS = 200;
@@ -29,6 +29,7 @@ export interface HistoryItem {
   durationSeconds?: number;
   synced: boolean;
   category?: Category; // routing tag: 'todo' | 'thought'; absent = unsorted
+  source?: CaptureSource; // 'voice' (recorded+transcribed) | 'text' (typed); default 'voice'
 }
 
 function newId(): string {
@@ -80,13 +81,18 @@ function isHistoryItem(value: unknown): value is HistoryItem {
  * Writes to localStorage immediately — this is the never-lose-it guarantee. Syncing is
  * the caller's next step (addCapture does NOT touch the network).
  */
-export function addCapture(transcript: string, durationSeconds?: number): HistoryItem {
+export function addCapture(
+  transcript: string,
+  durationSeconds?: number,
+  source: CaptureSource = 'voice'
+): HistoryItem {
   const item: HistoryItem = {
     id: newId(),
     transcript,
     createdAt: new Date().toISOString(),
     durationSeconds,
     synced: false,
+    source,
   };
   const items = loadHistory();
   items.unshift(item);
@@ -98,6 +104,16 @@ export function addCapture(transcript: string, durationSeconds?: number): Histor
 export function deleteCapture(id: string): void {
   const items = loadHistory().filter((i) => i.id !== id);
   saveHistory(items);
+}
+
+/** Wipe the entire local log (localStorage only — never touches Supabase; anon can't delete
+ *  the inbox rows anyway, and Claude clears those server-side after routing). */
+export function clearHistory(): void {
+  try {
+    localStorage.removeItem(HISTORY_KEY);
+  } catch {
+    // storage disabled — nothing we can do; the next saveHistory will overwrite anyway.
+  }
 }
 
 /**
@@ -134,7 +150,7 @@ export async function syncPending(): Promise<number> {
   for (const item of items) {
     if (item.synced) continue;
     try {
-      await saveCapture(item.transcript, item.durationSeconds, item.category);
+      await saveCapture(item.transcript, item.durationSeconds, item.category, item.source);
       item.synced = true;
       syncedCount++;
     } catch {

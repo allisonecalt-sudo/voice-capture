@@ -1,305 +1,302 @@
 /*
-  styles.css — Voice Capture
-  WHAT: the calm, dark, one-handed mobile styling for the record → transcribe → copy flow.
-  WHY:  her north-star apps (workout-tracker, budget-2026) are "clean, organized, calm
-        cards, not too insane" — one primary action visible at a time, big touch targets.
-  DECIDED: dark teal-on-charcoal palette (matches workout-tracker icon: #1a1f1c + #5eead4).
-        Record button is huge and unmistakable; recording state screams ON (pulse + red
-        pill + big mm:ss + live waveform). RTL base; transcript uses dir=auto.
-  BUILT:  tokens, header, record stage, recording indicator/waveform, spinner, result,
-        settings. Sized for a Pixel 7 Pro (~412×892 dp), one-handed. Plus: To-Do/Thought
-        routing chips (result + history rows) and History filter chips + sort toggle — same
-        calm pill language, large touch targets, accent = selected.
-  NEXT:   none for v0.
+  styles.css — Brain Dump (voice-capture)
+  WHAT: the whole look — a calm, dark, one-action capture app. Compose-first home with a single
+        morphing action bar, an inline recording state, a voice review screen, and a minimal log.
+  WHY:  this is Allison's "door to Claude" for current thoughts. Her design north star is
+        workout-tracker + budget-2026: "clean, organized, not too insane" — few surfaces, one
+        accent, breathing room. Dark + minimal so the empty canvas invites a thought.
+  DECIDED: near-black base (never pure #000), ONE muted-blue accent reserved for the live/primary
+        action, a white-opacity text ladder, 4px spacing scale, system fonts (no web-font load).
+        16px inputs to stop iOS zoom. Content fields use dir="auto" for He/En mixing.
 */
 
 :root {
-  --bg: #1a1f1c;
-  --surface: #232a26;
-  --surface-2: #2b332e;
-  --border: #38423b;
-  --text: #e8efe9;
-  --text-dim: #9fb0a4;
-  --accent: #5eead4;
-  --accent-press: #34d3b8;
-  --danger: #f87171;
-  --danger-deep: #b91c1c;
-  --radius: 18px;
-  --radius-lg: 28px;
-  --tap: 56px;
+  --bg: #15171a; /* app base — not pure black */
+  --surface-1: #1d2024; /* compose field, cards */
+  --surface-2: #25292e; /* pressed/active, recording strip */
+  --border: #2c3036;
+
+  --accent: #6c9ceb; /* send / Save / live — one muted blue */
+  --accent-press: #5784d6;
+  --success: #4fb477;
+  --danger: #c7625f;
+
+  --text-1: rgba(255, 255, 255, 0.92);
+  --text-2: rgba(255, 255, 255, 0.6);
+  --text-3: rgba(255, 255, 255, 0.38);
+
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+
+  --r-field: 22px;
+  --r-card: 14px;
+
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+  --lh: 1.45;
 }
 
 * {
   box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+  -webkit-tap-highlight-color: transparent;
 }
 
 html,
 body {
+  margin: 0;
   height: 100%;
 }
 
 body {
   background: var(--bg);
-  color: var(--text);
-  font-family:
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    Roboto,
-    'Noto Sans Hebrew',
-    sans-serif;
+  color: var(--text-1);
+  font-family: var(--font);
+  line-height: var(--lh);
   -webkit-font-smoothing: antialiased;
-  line-height: 1.5;
 }
 
 #app {
-  min-height: 100%;
-  max-width: 560px;
-  margin: 0 auto;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
-  padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
 }
 
-/* ── Header ── */
-.app-header {
+/* ── Top bar ─────────────────────────────────────────────── */
+.topbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 18px 20px 6px;
+  gap: var(--s2);
+  height: 56px;
+  padding: 0 var(--s3);
+  padding-top: env(safe-area-inset-top);
+  flex: 0 0 auto;
 }
-
-.app-header h1 {
-  font-size: 1.25rem;
-  font-weight: 700;
-  letter-spacing: 0.01em;
+.topbar-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text-1);
+  flex: 1;
 }
-
-.header-actions {
+.topbar .icon-btn {
+  order: 0;
+}
+.topbar-actions {
   display: flex;
-  align-items: center;
-  gap: 2px;
+  gap: var(--s1);
+  margin-left: auto;
 }
 
 .icon-btn {
   background: transparent;
   border: none;
-  color: var(--text-dim);
-  font-size: 1.4rem;
-  width: var(--tap);
-  height: var(--tap);
-  border-radius: 50%;
+  color: var(--text-2);
+  font-size: 20px;
+  line-height: 1;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
   cursor: pointer;
-  display: grid;
-  place-items: center;
-}
-.icon-btn:active {
-  background: var(--surface);
-}
-
-/* ── Screen layout ── */
-.screen {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 20px;
-  padding: 16px 20px 32px;
-}
-
-.screen-idle,
-.screen-recording,
-.screen-transcribing {
-  justify-content: center;
-}
-
-/* ── Cards ── */
-.card {
-  width: 100%;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 18px;
-}
-
-/* ── No-key prompt ── */
-.key-prompt-title {
-  font-weight: 700;
-  margin-bottom: 6px;
-}
-.key-prompt-body {
-  color: var(--text-dim);
-  font-size: 0.95rem;
-  margin-bottom: 14px;
-}
-
-/* ── Record stage ── */
-.record-stage {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 16px;
-}
-
-.record-btn {
-  width: 200px;
-  height: 200px;
-  border-radius: 50%;
-  border: none;
-  background: var(--accent);
-  color: #0c2620;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  cursor: pointer;
-  box-shadow: 0 10px 30px rgba(94, 234, 212, 0.25);
-  transition:
-    transform 0.08s ease,
-    background 0.2s ease;
-}
-.record-btn:active {
-  transform: scale(0.97);
-  background: var(--accent-press);
-}
-.record-btn.is-disabled {
-  background: var(--surface-2);
-  color: var(--text-dim);
-  box-shadow: none;
-  cursor: not-allowed;
-}
-
-.record-dot {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: var(--danger-deep);
-}
-
-.record-label {
-  font-size: 1.3rem;
-  font-weight: 800;
-  letter-spacing: 0.02em;
-}
-
-.record-hint {
-  color: var(--text-dim);
-  font-size: 0.95rem;
-  text-align: center;
-  max-width: 28ch;
-}
-
-/* Secondary hint for the share-from-WhatsApp path — quieter than the primary record hint. */
-.record-hint-share {
-  font-size: 0.85rem;
-  opacity: 0.75;
-  margin-top: -0.4rem;
-}
-
-/* ── Recording state: unmistakable ON ── */
-.record-btn.is-recording {
-  background: var(--danger);
-  color: #2a0606;
-  box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.6);
-  animation: pulse 1.4s ease-out infinite;
-}
-@keyframes pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.55);
-  }
-  70% {
-    box-shadow: 0 0 0 36px rgba(248, 113, 113, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(248, 113, 113, 0);
-  }
-}
-
-.stop-square {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
-  background: #2a0606;
-}
-
-.recording-indicator {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.rec-pill {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  background: var(--danger-deep);
-  color: #fff;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  padding: 6px 14px;
-  border-radius: 999px;
-  font-size: 0.95rem;
+  justify-content: center;
+}
+.icon-btn:active {
+  background: var(--surface-2);
+}
+.icon-btn.sm {
+  width: 36px;
+  height: 36px;
+  font-size: 15px;
 }
 
-.rec-blink {
+/* ── Screen scaffolding ──────────────────────────────────── */
+.screen {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0 var(--s4) calc(var(--s4) + env(safe-area-inset-bottom));
+  overflow-y: auto;
+}
+
+.error-banner {
+  background: rgba(199, 98, 95, 0.14);
+  border: 1px solid var(--danger);
+  color: #f0b9b7;
+  border-radius: var(--r-card);
+  padding: var(--s3);
+  font-size: 14px;
+  margin: var(--s2) 0;
+}
+
+.muted-hint {
+  color: var(--text-3);
+  font-size: 13px;
+  text-align: center;
+  margin: var(--s2) 0 0;
+}
+
+/* ── Compose (home) ──────────────────────────────────────── */
+.screen-compose {
+  padding-bottom: calc(var(--s3) + env(safe-area-inset-bottom));
+}
+.canvas {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.canvas-hint {
+  color: var(--text-3);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.composer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s2);
+  padding-top: var(--s2);
+}
+.composer-input {
+  flex: 1 1 auto;
+  resize: none;
+  min-height: 48px;
+  max-height: 140px;
+  padding: 13px var(--s4);
+  border-radius: var(--r-field);
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-1);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.4;
+  outline: none;
+  overflow-y: hidden;
+}
+.composer-input::placeholder {
+  color: var(--text-3);
+}
+.composer-input:focus {
+  border-color: var(--accent);
+}
+.composer-action {
+  flex: 0 0 auto;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background 0.12s ease,
+    transform 0.12s ease;
+}
+.composer-action.is-mic {
+  background: var(--surface-2);
+  color: var(--accent);
+}
+.composer-action.is-send {
+  background: var(--accent);
+  color: #fff;
+}
+.composer-action:active {
+  transform: scale(0.92);
+}
+
+/* ── Recording ───────────────────────────────────────────── */
+.screen-recording {
+  align-items: center;
+  justify-content: center;
+  gap: var(--s5);
+}
+.rec-status {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  font-variant-numeric: tabular-nums;
+}
+.rec-dot {
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: #fff;
-  animation: blink 1s steps(2, start) infinite;
+  background: var(--danger);
+  animation: pulse 1.1s ease-in-out infinite;
 }
-@keyframes blink {
-  to {
-    visibility: hidden;
+.rec-timer {
+  font-size: 34px;
+  font-weight: 600;
+}
+.rec-label {
+  color: var(--text-2);
+  font-size: 14px;
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.8);
   }
 }
-
-.timer {
-  font-variant-numeric: tabular-nums;
-  font-size: 3.2rem;
-  font-weight: 800;
-  letter-spacing: 0.02em;
-  font-family: 'SFMono-Regular', ui-monospace, 'Roboto Mono', monospace;
-}
-
-/* ── Live waveform ── */
 .waveform {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 3px;
-  height: 96px;
+  height: 72px;
   width: 100%;
-  max-width: 360px;
-  direction: ltr; /* bars flow left→right regardless of page RTL */
+  max-width: 340px;
 }
 .wave-bar {
-  flex: 1;
-  min-width: 3px;
+  flex: 1 1 0;
   background: var(--accent);
   border-radius: 3px;
-  height: 8%;
-  transition: height 0.09s linear;
+  opacity: 0.85;
+  transition: height 0.08s linear;
 }
-
 .limit-warning {
   color: var(--danger);
-  font-size: 0.9rem;
+  font-size: 13px;
   text-align: center;
-  max-width: 32ch;
+  margin: 0;
+}
+.rec-actions {
+  display: flex;
+  gap: var(--s3);
+  width: 100%;
+  max-width: 340px;
+}
+.rec-actions .btn {
+  flex: 1;
 }
 
-/* ── Transcribing spinner ── */
+/* ── Transcribing ────────────────────────────────────────── */
+.screen-transcribing {
+  align-items: center;
+  justify-content: center;
+  gap: var(--s4);
+}
 .spinner {
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  border: 6px solid var(--surface-2);
+  width: 38px;
+  height: 38px;
+  border: 3px solid var(--surface-2);
   border-top-color: var(--accent);
-  animation: spin 0.9s linear infinite;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }
 @keyframes spin {
   to {
@@ -307,358 +304,214 @@ body {
   }
 }
 .transcribing-text {
-  font-size: 1.2rem;
-  font-weight: 700;
+  font-size: 16px;
+  color: var(--text-1);
+  margin: 0;
 }
 
-/* ── Result ── */
-.screen-result {
-  justify-content: flex-start;
-  align-items: stretch;
+/* ── Review (voice opt-in save) ──────────────────────────── */
+.screen-review {
+  padding-top: var(--s4);
 }
 .field-label {
-  font-size: 0.85rem;
-  color: var(--text-dim);
-  font-weight: 600;
-  letter-spacing: 0.03em;
+  font-size: 13px;
+  color: var(--text-2);
+  margin-bottom: var(--s2);
 }
-.transcript {
+.review-text {
   width: 100%;
-  min-height: 320px;
-  flex: 1;
-  background: var(--surface);
+  flex: 1 1 auto;
+  min-height: 160px;
+  resize: none;
+  padding: var(--s4);
+  border-radius: var(--r-card);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-size: 1.05rem;
-  line-height: 1.6;
-  padding: 16px;
-  resize: vertical;
-  font-family: inherit;
+  background: var(--surface-1);
+  color: var(--text-1);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: var(--lh);
+  outline: none;
 }
-.transcript:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-.save-status {
-  font-size: 0.9rem;
-  font-weight: 600;
-  min-height: 1.2em;
-  margin-top: 2px;
-}
-.save-status.is-saved {
-  color: var(--accent);
-}
-.save-status.is-pending {
-  color: var(--text-dim);
-}
-
-/* ── Routing tag chips (result screen) ── */
-.tag-row {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 4px;
-}
-.tag-row-label {
-  font-size: 0.85rem;
-  color: var(--text-dim);
-  font-weight: 600;
-  letter-spacing: 0.03em;
-}
-.tag-chips {
-  display: flex;
-  gap: 10px;
-}
-.tag-chip {
-  flex: 1;
-  min-height: 48px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text);
-  font-size: 1rem;
-  font-weight: 700;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-}
-.tag-chip:active {
-  transform: scale(0.98);
-}
-.tag-chip.is-active {
-  background: var(--accent);
-  color: #0c2620;
+.review-text:focus {
   border-color: var(--accent);
 }
-
-.result-actions {
+.review-actions {
   display: flex;
-  gap: 12px;
-  margin-top: 4px;
+  align-items: center;
+  gap: var(--s2);
+  padding-top: var(--s4);
+}
+.review-actions .btn-ghost {
+  margin-right: auto;
 }
 
-/* ── Buttons ── */
-.btn {
-  min-height: var(--tap);
-  border-radius: 14px;
-  border: none;
-  font-size: 1.05rem;
-  font-weight: 700;
-  cursor: pointer;
-  padding: 0 20px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+/* ── Log ─────────────────────────────────────────────────── */
+.screen-log {
+  padding-top: var(--s2);
 }
-.btn:active {
-  transform: scale(0.98);
+.log-tools {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--s1) 0 var(--s2);
+}
+.log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+.log-card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  padding: var(--s4);
+}
+.log-text {
+  margin: 0 0 var(--s3);
+  font-size: 15px;
+  line-height: var(--lh);
+  color: var(--text-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.log-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+.log-time {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.log-card-actions {
+  display: flex;
+  gap: var(--s1);
+}
+.log-empty {
+  margin: auto;
+  color: var(--text-3);
+  font-size: 15px;
+  text-align: center;
+}
+
+/* ── Settings ────────────────────────────────────────────── */
+.screen-settings {
+  padding-top: var(--s4);
+}
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  padding: var(--s5);
+}
+.settings-label {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 var(--s2);
+}
+.settings-help {
+  font-size: 14px;
+  color: var(--text-2);
+  margin: 0 0 var(--s4);
+}
+.settings-input {
+  width: 100%;
+  padding: 13px var(--s4);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-1);
+  font-size: 16px;
+  font-family: var(--font);
+  outline: none;
+}
+.settings-input:focus {
+  border-color: var(--accent);
+}
+.settings-actions {
+  display: flex;
+  gap: var(--s2);
+  margin: var(--s4) 0 var(--s3);
+}
+.settings-status {
+  font-size: 13px;
+  color: var(--text-2);
+  margin: 0 0 var(--s4);
+}
+.settings-link {
+  color: var(--accent);
+  font-size: 14px;
+  text-decoration: none;
+}
+
+/* ── Buttons ─────────────────────────────────────────────── */
+.btn {
+  border: none;
+  border-radius: 14px;
+  padding: 13px var(--s5);
+  font-size: 15px;
+  font-weight: 600;
+  font-family: var(--font);
+  cursor: pointer;
+  line-height: 1.2;
 }
 .btn-primary {
   background: var(--accent);
-  color: #0c2620;
-  flex: 1;
+  color: #fff;
 }
 .btn-primary:active {
   background: var(--accent-press);
 }
-.copy-btn {
-  font-size: 1.15rem;
-}
-.btn-secondary {
-  background: var(--surface-2);
-  color: var(--text);
-  border: 1px solid var(--border);
-  flex: 1;
-}
 .btn-ghost {
   background: transparent;
-  color: var(--text-dim);
+  color: var(--text-2);
   border: 1px solid var(--border);
 }
-
-/* ── Settings ── */
-.screen-settings {
-  justify-content: flex-start;
-  align-items: stretch;
-}
-.settings-title {
-  font-size: 1.3rem;
-  font-weight: 700;
-}
-.text-input {
-  width: 100%;
-  min-height: var(--tap);
+.btn-ghost:active {
   background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  color: var(--text);
-  font-size: 1.05rem;
-  padding: 0 14px;
-  margin: 8px 0 6px;
 }
-.text-input:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-.settings-help {
-  color: var(--text-dim);
-  font-size: 0.9rem;
-  margin: 6px 0 14px;
-}
-.settings-help a {
-  color: var(--accent);
-}
-.settings-actions {
-  display: flex;
-  gap: 12px;
-}
-.settings-status {
-  color: var(--accent);
-  font-size: 0.9rem;
-  min-height: 1.2em;
-  margin-top: 10px;
-}
-.back-btn {
-  margin-top: 8px;
-}
-
-/* ── History ── */
-.screen-history {
-  justify-content: flex-start;
-  align-items: stretch;
-}
-.history-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-/* ── History controls: filter chips + sort toggle ── */
-.history-controls {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.filter-chips {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.filter-chip {
-  min-height: 44px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
+.btn-subtle {
   background: var(--surface-2);
-  color: var(--text);
-  font-size: 0.95rem;
-  font-weight: 700;
-  cursor: pointer;
-  padding: 0 16px;
+  color: var(--text-1);
 }
-.filter-chip:active {
-  transform: scale(0.98);
-}
-.filter-chip.is-active {
-  background: var(--accent);
-  color: #0c2620;
-  border-color: var(--accent);
-}
-.sort-toggle {
-  min-height: 44px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text-dim);
-  font-size: 0.95rem;
-  font-weight: 700;
-  cursor: pointer;
-  padding: 0 16px;
-  white-space: nowrap;
-}
-.sort-toggle:active {
-  transform: scale(0.98);
-}
-
-.history-empty {
-  color: var(--text-dim);
-  font-size: 1rem;
-  text-align: center;
-  padding: 40px 0;
-}
-.history-list {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  width: 100%;
-}
-.history-item {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 14px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.history-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-.history-meta-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.history-time {
-  font-size: 0.8rem;
-  color: var(--text-dim);
+.btn-text {
+  background: transparent;
+  border: none;
+  color: var(--text-2);
+  font-size: 14px;
   font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-/* ── Per-row tap-to-cycle tag chip ── */
-.history-tag-chip {
-  min-height: 36px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  font-size: 0.85rem;
-  font-weight: 700;
+  font-family: var(--font);
   cursor: pointer;
-  padding: 0 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  padding: var(--s2);
 }
-.history-tag-chip:active {
-  transform: scale(0.97);
-}
-.history-tag-chip.is-tagged {
-  background: var(--accent);
-  color: #0c2620;
-  border-color: var(--accent);
-}
-.history-tag-chip.is-untagged {
-  color: var(--text-dim);
-}
-.sync-dot {
-  font-size: 0.85rem;
-  line-height: 1;
-}
-.sync-dot.is-synced {
-  color: var(--accent);
-}
-.sync-dot.is-pending {
-  color: var(--text-dim);
-}
-.history-text {
-  font-size: 1rem;
-  line-height: 1.5;
-  color: var(--text);
-  white-space: pre-wrap;
-  word-break: break-word;
-  /* Show a calm preview; the row stays tappable to the full text in the textarea elsewhere. */
-  display: -webkit-box;
-  -webkit-line-clamp: 6;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.history-actions {
-  display: flex;
-  gap: 10px;
-}
-.history-actions .btn {
-  flex: 1;
-  min-height: 48px;
-  font-size: 1rem;
+.btn-text.is-armed {
+  color: var(--danger);
 }
 
-/* ── Banners ── */
-.error-banner {
-  width: 100%;
-  background: rgba(248, 113, 113, 0.12);
-  border: 1px solid var(--danger);
-  color: #fecaca;
-  border-radius: 12px;
-  padding: 12px 14px;
-  font-size: 0.95rem;
+/* ── Toast ───────────────────────────────────────────────── */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(84px + env(safe-area-inset-bottom));
+  transform: translateX(-50%) translateY(8px);
+  background: var(--surface-2);
+  color: var(--text-1);
+  font-size: 13px;
+  padding: var(--s2) var(--s4);
+  border-radius: 999px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+  z-index: 10;
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .record-btn.is-recording,
-  .rec-blink,
-  .spinner,
-  .wave-bar {
-    animation: none !important;
-    transition: none !important;
-  }
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
