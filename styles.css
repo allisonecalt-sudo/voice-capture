@@ -397,6 +397,18 @@ body {
   font-size: 15px;
   text-align: center;
 }
+.log-sync {
+  margin: 0 0 var(--s2);
+  font-size: 12px;
+  color: var(--success);
+  text-align: center;
+}
+.log-sync-cta {
+  display: block;
+  width: 100%;
+  text-align: center;
+  color: var(--accent);
+}
 
 /* ── Settings ────────────────────────────────────────────── */
 .screen-settings {
@@ -431,6 +443,12 @@ body {
 }
 .settings-input:focus {
   border-color: var(--accent);
+}
+.settings-input.stacked {
+  margin-top: var(--s2);
+}
+.card + .card {
+  margin-top: var(--s3);
 }
 .settings-actions {
   display: flex;

@@ -34,10 +34,21 @@ interface SupabasePost {
 async function installMocks(
   page: import('@playwright/test').Page,
   transcript = FAKE_TRANSCRIPT,
-  supabaseOnline = true
+  supabaseOnline = true,
+  remoteRows: unknown[] = []
 ): Promise<void> {
   await page.addInitScript(
-    ({ t, online, host }: { t: string; online: boolean; host: string }) => {
+    ({
+      t,
+      online,
+      host,
+      remote,
+    }: {
+      t: string;
+      online: boolean;
+      host: string;
+      remote: unknown[];
+    }) => {
       const fakeTrack = { stop() {} } as unknown as MediaStreamTrack;
       const fakeStream = { getTracks: () => [fakeTrack] } as unknown as MediaStream;
       Object.defineProperty(navigator, 'mediaDevices', {
@@ -86,7 +97,27 @@ async function installMocks(
             { status: 200, headers: { 'Content-Type': 'application/json' } }
           );
         }
+        if (url.includes('/auth/v1/token')) {
+          // Login / refresh — hand back a fake session (never hit real gotrue in tests).
+          return new Response(
+            JSON.stringify({
+              access_token: 'fake-access',
+              refresh_token: 'fake-refresh',
+              expires_in: 3600,
+              user: { email: 'allisonecalt@gmail.com' },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
         if (url.includes(host) && url.includes('voice_captures')) {
+          const method = (init?.method ?? 'GET').toUpperCase();
+          if (method === 'GET') {
+            // Authenticated inbox read-back (cross-device history).
+            return new Response(JSON.stringify(remote), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
           const bodyText = typeof init?.body === 'string' ? init.body : '';
           const posts = (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts;
           posts.push(bodyText ? JSON.parse(bodyText) : null);
@@ -101,7 +132,7 @@ async function installMocks(
         value: { writeText: async () => {} },
       });
     },
-    { t: transcript, online: supabaseOnline, host: SUPABASE_HOST }
+    { t: transcript, online: supabaseOnline, host: SUPABASE_HOST, remote: remoteRows }
   );
 }
 
@@ -286,6 +317,79 @@ test.describe('log', () => {
       HISTORY_KEY
     );
     expect(remaining).toBe(0);
+  });
+});
+
+test.describe('cross-device sync (logged in)', () => {
+  const HISTORY_KEY = 'vc.history';
+  const SESSION_KEY = 'vc.session';
+  const REMOTE = [
+    {
+      id: 'r1',
+      transcript: 'note from my phone',
+      source: 'voice',
+      created_at: new Date(Date.now() - 30_000).toISOString(),
+    },
+  ];
+
+  test('a logged-in Log merges the inbox with local notes and marks remote read-only', async ({
+    page,
+  }) => {
+    await page.addInitScript(
+      ({ hk, sk }: { hk: string; sk: string }) => {
+        window.localStorage.setItem(
+          sk,
+          JSON.stringify({
+            access_token: 'fake-access',
+            refresh_token: 'fake-refresh',
+            expires_at: Date.now() + 3_600_000,
+            email: 'allisonecalt@gmail.com',
+          })
+        );
+        window.localStorage.setItem(
+          hk,
+          JSON.stringify([
+            {
+              id: 'local1',
+              transcript: 'note typed right here',
+              createdAt: new Date(Date.now() - 5_000).toISOString(),
+              synced: false,
+              source: 'text',
+            },
+          ])
+        );
+      },
+      { hk: HISTORY_KEY, sk: SESSION_KEY }
+    );
+    await installMocks(page, FAKE_TRANSCRIPT, true, REMOTE);
+    await page.goto('/');
+
+    await page.locator('#open-log').click();
+    // Inbox row (phone) + the local unsynced note both show.
+    await expect(page.locator('.log-card')).toHaveCount(2);
+    await expect(page.locator('.log-text', { hasText: 'note from my phone' })).toBeVisible();
+    await expect(page.locator('.log-text', { hasText: 'note typed right here' })).toBeVisible();
+    // "Synced" banner; the remote row is read-only (no delete) — only the local note can be deleted.
+    await expect(page.locator('.log-sync')).toBeVisible();
+    await expect(page.locator('.log-del')).toHaveCount(1);
+  });
+
+  test('logging in from Settings shows the inbox notes', async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.clear());
+    await installMocks(page, FAKE_TRANSCRIPT, true, REMOTE);
+    await page.goto('/');
+
+    await page.locator('#open-log').click();
+    await page.locator('#log-login').click(); // CTA → Settings
+    await expect(page.locator('.screen-settings')).toBeVisible();
+    await page.locator('#login-email').fill('allisonecalt@gmail.com');
+    await page.locator('#login-password').fill('whatever');
+    await page.locator('#login-btn').click();
+
+    // Lands on the Log, synced, showing the inbox note from the "other device".
+    await expect(page.locator('.screen-log')).toBeVisible();
+    await expect(page.locator('.log-sync')).toBeVisible();
+    await expect(page.locator('.log-text', { hasText: 'note from my phone' })).toBeVisible();
   });
 });
 

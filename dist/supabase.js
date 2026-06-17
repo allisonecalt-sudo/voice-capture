@@ -57,3 +57,22 @@ export async function saveCapture(transcript, durationSeconds, category, source 
         throw new Error(`Supabase save failed: HTTP ${res.status}`);
     }
 }
+/**
+ * Read recent inbox rows back (newest first). Authenticated-only: the anon RLS policy grants INSERT
+ * but no SELECT, so this requires a valid login token. The READ is the "see it on every device"
+ * half — it's how a note typed on the phone shows up on the computer.
+ * @param token a valid access token from auth.getToken()
+ * @param limit max rows to read (default 200, matching the local history cap)
+ * @throws on any non-2xx so the caller can fall back to local-only history.
+ */
+export async function fetchRemoteCaptures(token, limit = 200) {
+    const url = `${SUPABASE_URL}?select=*&order=created_at.desc&limit=${limit}`;
+    const res = await fetch(url, {
+        headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+        throw new Error(`Supabase read failed: HTTP ${res.status}`);
+    }
+    const rows = (await res.json());
+    return Array.isArray(rows) ? rows : [];
+}

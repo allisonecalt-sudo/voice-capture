@@ -23,6 +23,8 @@
 import { transcribeAudio } from './gemini.js';
 import { TARGET_SAMPLE_RATE, downsampleBuffer, mergeChunks, encodeWav, blobToBase64, } from './wav.js';
 import { addCapture, clearHistory, deleteCapture, loadHistory, syncPending } from './history.js';
+import { fetchRemoteCaptures } from './supabase.js';
+import { currentEmail, getToken, isLoggedIn, login, logout } from './auth.js';
 // ── Constants ───────────────────────────────────────────────────────────────
 const KEY_STORAGE = 'voice-capture.gemini-key';
 // Inline base64 ceiling. A 16 kHz mono 16-bit WAV is ~1.9 MB/min and Gemini's inline cap is
@@ -407,6 +409,52 @@ function clearLog() {
     render();
     showToast('Log cleared');
 }
+let remoteCache = null; // last successful inbox read (null = none yet)
+/** The list the Log renders: local-only when logged out / no inbox read yet, else inbox ∪ local. */
+function buildLogRows() {
+    const local = loadHistory();
+    const localRows = (synced = true) => local.map((l) => ({
+        id: l.id,
+        transcript: l.transcript,
+        createdAt: l.createdAt,
+        synced: synced && l.synced,
+        source: l.source,
+        remote: false,
+    }));
+    if (!isLoggedIn() || remoteCache === null)
+        return localRows();
+    const remoteRows = remoteCache.map((r) => ({
+        id: r.id,
+        transcript: r.transcript,
+        createdAt: r.created_at,
+        synced: true,
+        source: r.source,
+        remote: true,
+    }));
+    // Only local notes the inbox doesn't already have (offline / not-yet-synced) ride alongside.
+    const remoteTexts = new Set(remoteCache.map((r) => r.transcript.trim()));
+    const localOnly = localRows().filter((l) => !remoteTexts.has(l.transcript.trim()));
+    return [...remoteRows, ...localOnly].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+}
+/** Pull the inbox in the background and re-render the Log when it lands. Silent on failure. */
+async function refreshRemoteLog() {
+    if (!isLoggedIn())
+        return;
+    const token = await getToken();
+    if (!token) {
+        if (state.screen === 'log')
+            render(); // session expired → reflect logged-out
+        return;
+    }
+    try {
+        remoteCache = await fetchRemoteCaptures(token);
+        if (state.screen === 'log')
+            render();
+    }
+    catch (err) {
+        console.warn('[brain-dump] inbox read failed:', err);
+    }
+}
 // ── Rendering ─────────────────────────────────────────────────────────────────
 function root() {
     const el = document.getElementById('app');
@@ -508,8 +556,13 @@ function renderReview() {
     </main>`;
 }
 function renderLog() {
-    const items = loadHistory();
-    const tools = items.length > 0
+    const items = buildLogRows();
+    const hasLocal = loadHistory().length > 0;
+    const syncState = isLoggedIn()
+        ? `<p class="log-sync" id="log-sync">✓ Synced — your notes from every device</p>`
+        : `<button class="btn-text log-sync-cta" id="log-login">↻ Log in to see notes from your other devices</button>`;
+    // "Clear all" only clears THIS device's local buffer; gate it on local items existing.
+    const tools = hasLocal
         ? `<div class="log-tools">
            <button class="btn-text ${state.confirmingClear ? 'is-armed' : ''}" id="clear-all">${state.confirmingClear ? 'Tap again to clear all' : 'Clear all'}</button>
          </div>`
@@ -526,6 +579,7 @@ function renderLog() {
       </div>
     </header>
     <main class="screen screen-log">
+      ${syncState}
       ${tools}
       ${list}
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -534,20 +588,51 @@ function renderLog() {
 function renderLogCard(it) {
     const icon = it.source === 'text' ? '✍️' : '🎤';
     const copied = state.copiedId === it.id;
+    // Remote rows are read-only (the inbox; Claude clears them after routing) — no delete button.
+    // Local-only notes that haven't reached the inbox yet still show "syncing" + a delete.
+    const del = it.remote
+        ? ''
+        : `<button class="icon-btn sm log-del" data-id="${it.id}" aria-label="Delete">🗑</button>`;
+    const syncing = !it.remote && !it.synced ? ' · syncing' : '';
     return `
     <li class="log-card">
       <p class="log-text" dir="auto">${escapeHtml(it.transcript)}</p>
       <div class="log-meta">
-        <span class="log-time">${icon} ${relativeTime(it.createdAt)}${it.synced ? '' : ' · syncing'}</span>
+        <span class="log-time">${icon} ${relativeTime(it.createdAt)}${syncing}</span>
         <span class="log-card-actions">
           <button class="icon-btn sm log-copy" data-id="${it.id}" aria-label="Copy">${copied ? 'Copied ✓' : '⧉'}</button>
-          <button class="icon-btn sm log-del" data-id="${it.id}" aria-label="Delete">🗑</button>
+          ${del}
         </span>
       </div>
     </li>`;
 }
 function renderSettings() {
     const status = hasKey() ? 'Key saved ✓' : 'No key yet';
+    const account = isLoggedIn()
+        ? `<div class="card">
+        <p class="settings-label">Sync</p>
+        <p class="settings-help">
+          Signed in as <strong>${escapeHtml(currentEmail())}</strong>. Your notes show up on every
+          device you log in on.
+        </p>
+        <div class="settings-actions">
+          <button class="btn btn-ghost" id="logout-btn">Log out</button>
+        </div>
+      </div>`
+        : `<div class="card">
+        <p class="settings-label">Sync across devices</p>
+        <p class="settings-help">
+          Log in to see your notes on every device. Same email + password as your budget app.
+        </p>
+        <input class="settings-input" id="login-email" type="email" inputmode="email"
+               autocomplete="username" placeholder="Email" />
+        <input class="settings-input stacked" id="login-password" type="password"
+               autocomplete="current-password" placeholder="Password" />
+        <div class="settings-actions">
+          <button class="btn btn-primary" id="login-btn">Log in</button>
+        </div>
+        <p class="settings-status" id="login-status"></p>
+      </div>`;
     return `
     <header class="topbar">
       <button class="icon-btn" id="settings-back" aria-label="Back" title="Back">←</button>
@@ -555,6 +640,7 @@ function renderSettings() {
       <div class="topbar-actions"></div>
     </header>
     <main class="screen screen-settings">
+      ${account}
       <div class="card">
         <p class="settings-label">Gemini API key</p>
         <p class="settings-help">
@@ -661,6 +747,7 @@ function wireCompose() {
         state.confirmingClear = false;
         state.screen = 'log';
         render();
+        void refreshRemoteLog(); // pull cross-device notes; re-renders the Log when they land
     });
     const ta = document.getElementById('draft');
     if (ta) {
@@ -698,13 +785,17 @@ function wireLog() {
         state.screen = 'settings';
         render();
     });
+    document.getElementById('log-login')?.addEventListener('click', () => {
+        state.screen = 'settings';
+        render();
+    });
     document.getElementById('clear-all')?.addEventListener('click', clearLog);
     document.querySelectorAll('.log-copy').forEach((btn) => {
         btn.addEventListener('click', () => {
             const id = btn.dataset.id;
             if (!id)
                 return;
-            const item = loadHistory().find((h) => h.id === id);
+            const item = buildLogRows().find((h) => h.id === id);
             if (!item)
                 return;
             void copyText(item.transcript).then((ok) => {
@@ -760,6 +851,53 @@ function wireSettings() {
         setKey('');
         render();
     });
+    document.getElementById('login-btn')?.addEventListener('click', () => void handleLogin());
+    document.getElementById('login-password')?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter')
+            void handleLogin();
+    });
+    document.getElementById('logout-btn')?.addEventListener('click', () => {
+        logout();
+        remoteCache = null;
+        state.screen = 'settings';
+        render();
+        showToast('Logged out');
+    });
+}
+/** Sign in from Settings, warm the inbox, then jump to the Log so she SEES the synced notes. */
+async function handleLogin() {
+    const emailEl = document.getElementById('login-email');
+    const pwEl = document.getElementById('login-password');
+    const statusEl = document.getElementById('login-status');
+    const btn = document.getElementById('login-btn');
+    const email = emailEl?.value.trim() ?? '';
+    const password = pwEl?.value ?? '';
+    if (!email || !password) {
+        if (statusEl)
+            statusEl.textContent = 'Enter your email and password.';
+        return;
+    }
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Logging in…';
+    }
+    try {
+        await login(email, password);
+        remoteCache = null;
+        await refreshRemoteLog(); // warm the inbox before we show the Log
+        state.screen = 'log';
+        render();
+        showToast('Synced ✓');
+    }
+    catch (err) {
+        if (statusEl) {
+            statusEl.textContent = err instanceof Error ? err.message : 'Login failed.';
+        }
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Log in';
+        }
+    }
 }
 // ── Utilities ──────────────────────────────────────────────────────────────────
 function escapeHtml(str) {
@@ -804,6 +942,8 @@ void syncPending().then((n) => {
     if (n > 0 && state.screen === 'log')
         render();
 });
+// If she's already logged in, warm the inbox read so the Log shows cross-device notes instantly.
+void refreshRemoteLog();
 // Best-effort flush when she backgrounds / closes the app. The local copy is already safe; the
 // on-load sync above is the backstop.
 window.addEventListener('pagehide', () => void syncPending());
