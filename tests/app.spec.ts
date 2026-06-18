@@ -179,9 +179,28 @@ test.describe('compose home (no key needed for typing)', () => {
     await expect(page.locator('#compose-action')).toHaveClass(/is-mic/);
   });
 
-  test('tapping the mic with no key routes to Settings', async ({ page }) => {
-    await page.locator('#compose-action').click();
+  test('tapping the mic with no key shows an inline explainer, not a cold bounce', async ({
+    page,
+  }) => {
+    await page.locator('#compose-action').click(); // mic, no key set
+    // Stays on compose with an inline explainer — never yanked into Settings.
+    await expect(page.locator('.screen-compose')).toBeVisible();
+    await expect(page.locator('.key-prompt')).toBeVisible();
+    await expect(page.locator('.screen-settings')).toHaveCount(0);
+    // "Set it up" is the one-tap path into Settings.
+    await page.locator('#setup-voice').click();
     await expect(page.locator('.screen-settings')).toBeVisible();
+  });
+
+  test('a typed save shows the tappable "Saved to your Log" confirmation', async ({ page }) => {
+    await page.locator('#draft').fill('buy milk before friday');
+    await page.locator('#compose-action').click();
+    const chip = page.locator('#compose-confirm');
+    await expect(chip).toBeVisible();
+    await expect(chip).toContainText(/saved to your log/i);
+    // Tapping the beat jumps to the Log so she SEES it saved (nothing-lost).
+    await chip.click();
+    await expect(page.locator('.screen-log')).toBeVisible();
   });
 });
 

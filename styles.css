@@ -533,3 +533,56 @@ body {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
+
+/* ── Keyless-mic explainer (compose) ──────────────────────── *
+   Shown inline when she taps the mic with no Gemini key — explains why + a
+   one-tap path to set it up, instead of a cold bounce into Settings. */
+.key-prompt {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  padding: var(--s3);
+  margin: 0 var(--s4) var(--s3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+.key-prompt-text {
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.key-prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+
+/* ── "It landed" confirmation chip (after a typed save) ───── *
+   The lingering, tappable nothing-lost beat. Quiet success-green pill that
+   fades in, holds ~4s, fades out; tap jumps to the Log to see the saved note. */
+.compose-confirm {
+  position: fixed;
+  left: 50%;
+  bottom: calc(96px + env(safe-area-inset-bottom));
+  transform: translateX(-50%) translateY(8px);
+  background: rgba(79, 180, 119, 0.16);
+  border: 1px solid var(--success);
+  color: #bfe6cd;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: var(--font);
+  padding: var(--s2) var(--s4);
+  border-radius: 999px;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+  z-index: 11;
+}
+.compose-confirm.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  pointer-events: auto;
+}

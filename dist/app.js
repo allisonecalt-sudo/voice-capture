@@ -45,6 +45,7 @@ const state = {
     levels: new Array(WAVEFORM_BARS).fill(0),
     copiedId: null,
     confirmingClear: false,
+    needsKeyPrompt: false,
 };
 // ── Key storage (localStorage only, device-only) ─────────────────────────────
 function getKey() {
@@ -322,6 +323,7 @@ function sendComposed() {
         return;
     addCapture(text, 0, 'text'); // local-first, never lose it
     state.draft = '';
+    state.needsKeyPrompt = false;
     const ta = document.getElementById('draft');
     if (ta) {
         ta.value = '';
@@ -329,18 +331,24 @@ function sendComposed() {
         ta.focus();
     }
     syncComposeAction();
-    showToast('Sent ✓');
+    // A visible "it landed" beat — typed capture's #1 need is nothing-lost, and a
+    // 1.6s toast alone was thin reassurance. This chip lingers (~4s) + is tappable
+    // to the Log so she can SEE it saved. DOM-direct (no render) so the keyboard
+    // stays up for rapid capture. (Replaces the old transient "Sent ✓" toast.)
+    showSavedConfirm();
     buzz();
     void syncPending();
 }
-/** The mic in the compose bar. Typing needs no key; voice does — bounce to Settings if missing. */
+/** The mic in the compose bar. Typing needs no key; voice does. With no key, show
+ * an INLINE explainer on the compose screen (why + a one-tap path to set it up) —
+ * never a cold bounce into Settings at the moment she has a thought to capture. */
 function startVoice() {
     if (!hasKey()) {
-        state.screen = 'settings';
+        state.needsKeyPrompt = true;
         render();
-        showToast('Add your Gemini key for voice');
         return;
     }
+    state.needsKeyPrompt = false;
     void beginRecording();
 }
 // ── Review actions (voice is opt-in to save) ──────────────────────────────────
@@ -501,8 +509,17 @@ function renderCompose() {
     <main class="screen screen-compose">
       ${errorBanner()}
       <div class="canvas">
-        <p class="canvas-hint">Say it or type it.<br />It goes straight to Claude.</p>
+        <p class="canvas-hint">Say it or type it.<br />It's saved to your Claude inbox.</p>
       </div>
+      ${state.needsKeyPrompt
+        ? `<div class="key-prompt" role="status">
+        <p class="key-prompt-text">🎤 Voice needs a free Gemini key — about 30 seconds, one time. Typing works without it.</p>
+        <div class="key-prompt-actions">
+          <button type="button" class="btn btn-primary" id="setup-voice">Set it up →</button>
+          <button type="button" class="btn-text" id="dismiss-key-prompt">Not now</button>
+        </div>
+      </div>`
+        : ''}
       <form class="composer" id="composer" autocomplete="off">
         <textarea class="composer-input" id="draft" rows="1" dir="auto"
                   placeholder="What's on your mind?" aria-label="Type a thought"
@@ -510,6 +527,7 @@ function renderCompose() {
         <button type="button" class="composer-action ${hasText ? 'is-send' : 'is-mic'}"
                 id="compose-action" aria-label="${hasText ? 'Send' : 'Record'}">${hasText ? '➤' : '🎤'}</button>
       </form>
+      <button type="button" class="compose-confirm" id="compose-confirm" hidden></button>
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
     </main>`;
 }
@@ -707,6 +725,24 @@ function showToast(message) {
         el.classList.remove('show');
     }, 1600);
 }
+let confirmTimer = null;
+/** The lingering, tappable "it's in your Log" beat after a typed save. */
+function showSavedConfirm() {
+    const el = document.getElementById('compose-confirm');
+    if (!el)
+        return;
+    el.textContent = '✓ Saved to your Log — tap to see it';
+    el.hidden = false;
+    requestAnimationFrame(() => el.classList.add('show'));
+    if (confirmTimer !== null)
+        window.clearTimeout(confirmTimer);
+    confirmTimer = window.setTimeout(() => {
+        el.classList.remove('show');
+        window.setTimeout(() => {
+            el.hidden = true;
+        }, 250);
+    }, 4000);
+}
 function buzz() {
     try {
         if (navigator.vibrate)
@@ -763,6 +799,21 @@ function wireCompose() {
             sendComposed();
         else
             startVoice();
+    });
+    // Keyless-mic explainer: go set up voice, or dismiss and keep typing.
+    document.getElementById('setup-voice')?.addEventListener('click', () => {
+        state.needsKeyPrompt = false;
+        state.screen = 'settings';
+        render();
+    });
+    document.getElementById('dismiss-key-prompt')?.addEventListener('click', () => {
+        state.needsKeyPrompt = false;
+        render();
+    });
+    // The "it landed" confirmation chip — tap to jump to the Log and SEE it saved.
+    document.getElementById('compose-confirm')?.addEventListener('click', () => {
+        state.screen = 'log';
+        render();
     });
 }
 function wireReview() {
