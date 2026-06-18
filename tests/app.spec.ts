@@ -156,7 +156,7 @@ test.describe('compose home (no key needed for typing)', () => {
   });
 
   test('opens on the compose screen with the title and a mic action', async ({ page }) => {
-    await expect(page.locator('.topbar-title')).toHaveText('Brain dump');
+    await expect(page.locator('.topbar-title')).toContainText('Brain dump');
     await expect(page.locator('#draft')).toBeVisible();
     await expect(page.locator('#compose-action')).toHaveClass(/is-mic/);
   });

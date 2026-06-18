@@ -35,6 +35,9 @@ const WAVEFORM_BARS = 28;
 // Web Share Target hand-off — must match the names the service worker uses in handleShareTarget.
 const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
+// Visible build version (shown in the topbar) so she can tell at a glance whether a new
+// build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
+const APP_VERSION = 'v8';
 const state = {
     screen: 'compose',
     draft: '',
@@ -501,7 +504,7 @@ function renderCompose() {
     const hasText = state.draft.trim().length > 0;
     return `
     <header class="topbar">
-      <h1 class="topbar-title">Brain dump</h1>
+      <h1 class="topbar-title">Brain dump <span class="app-version">${APP_VERSION}</span></h1>
       <div class="topbar-actions">
         <button class="icon-btn" id="open-log" aria-label="Log" title="Log">🗒️</button>
       </div>

@@ -81,6 +81,13 @@ body {
   color: var(--text-1);
   flex: 1;
 }
+/* Quiet build tag — tiny + muted, just enough to confirm a new build loaded. */
+.app-version {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+  letter-spacing: 0.04em;
+}
 .topbar .icon-btn {
   order: 0;
 }
