@@ -37,7 +37,9 @@ const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v8';
+const APP_VERSION = 'v9';
+// Last-edited date shown next to the version (e.g. "v9 · Jun 18, 2026"). Update with APP_VERSION.
+const BUILD_DATE = 'Jun 18, 2026';
 const state = {
     screen: 'compose',
     draft: '',
@@ -504,7 +506,7 @@ function renderCompose() {
     const hasText = state.draft.trim().length > 0;
     return `
     <header class="topbar">
-      <h1 class="topbar-title">Brain dump <span class="app-version">${APP_VERSION}</span></h1>
+      <h1 class="topbar-title">Brain dump <span class="app-version">${APP_VERSION} · ${BUILD_DATE}</span></h1>
       <div class="topbar-actions">
         <button class="icon-btn" id="open-log" aria-label="Log" title="Log">🗒️</button>
       </div>
