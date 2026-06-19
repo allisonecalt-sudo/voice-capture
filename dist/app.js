@@ -37,9 +37,9 @@ const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v9';
+const APP_VERSION = 'v10';
 // Last-edited date shown next to the version (e.g. "v9 · Jun 18, 2026"). Update with APP_VERSION.
-const BUILD_DATE = 'Jun 18, 2026';
+const BUILD_DATE = 'Jun 19, 2026';
 const state = {
     screen: 'compose',
     draft: '',
@@ -51,6 +51,7 @@ const state = {
     copiedId: null,
     confirmingClear: false,
     needsKeyPrompt: false,
+    paused: false,
 };
 // ── Key storage (localStorage only, device-only) ─────────────────────────────
 function getKey() {
@@ -141,6 +142,18 @@ class AudioRecorder {
             void this.audioContext.close();
         this.chunks = [];
     }
+    /** Pause capture — suspends the context so no frames (and no paused silence) are recorded. */
+    async pause() {
+        if (this.audioContext && this.audioContext.state === 'running') {
+            await this.audioContext.suspend();
+        }
+    }
+    /** Resume capture from a pause — picks up appending frames where it left off. */
+    async resume() {
+        if (this.audioContext && this.audioContext.state === 'suspended') {
+            await this.audioContext.resume();
+        }
+    }
 }
 function rms(buf) {
     let sum = 0;
@@ -153,6 +166,18 @@ function rms(buf) {
 let recorder = null;
 let timerId = null;
 let recordingStartMs = 0;
+let pauseStartedMs = 0;
+/** The 1-second recording tick — shared by begin and resume so pause math stays in one place. */
+function startTimerLoop() {
+    timerId = window.setInterval(() => {
+        state.elapsedSeconds = Math.floor((Date.now() - recordingStartMs) / 1000);
+        updateTimerText();
+        if (state.elapsedSeconds >= HARD_LIMIT_SECONDS)
+            void finishRecording();
+        else if (state.elapsedSeconds === SOFT_LIMIT_SECONDS)
+            updateLimitWarning();
+    }, 1000);
+}
 async function beginRecording() {
     state.error = null;
     state.transcript = '';
@@ -178,16 +203,10 @@ async function beginRecording() {
     }
     state.screen = 'recording';
     state.elapsedSeconds = 0;
+    state.paused = false;
     recordingStartMs = Date.now();
     render();
-    timerId = window.setInterval(() => {
-        state.elapsedSeconds = Math.floor((Date.now() - recordingStartMs) / 1000);
-        updateTimerText();
-        if (state.elapsedSeconds >= HARD_LIMIT_SECONDS)
-            void finishRecording();
-        else if (state.elapsedSeconds === SOFT_LIMIT_SECONDS)
-            updateLimitWarning();
-    }, 1000);
+    startTimerLoop();
 }
 async function finishRecording() {
     if (!recorder)
@@ -196,6 +215,7 @@ async function finishRecording() {
         window.clearInterval(timerId);
         timerId = null;
     }
+    state.paused = false;
     const durationSeconds = state.elapsedSeconds;
     state.screen = 'transcribing';
     render();
@@ -222,7 +242,31 @@ function cancelRecording() {
     }
     state.screen = 'compose';
     state.elapsedSeconds = 0;
+    state.paused = false;
     render();
+}
+/** Pause the live recording — freezes the timer + waveform, keeps the mic+buffer alive. */
+function pauseRecording() {
+    if (!recorder || state.paused)
+        return;
+    if (timerId !== null) {
+        window.clearInterval(timerId);
+        timerId = null;
+    }
+    pauseStartedMs = Date.now();
+    state.paused = true;
+    void recorder.pause();
+    render();
+}
+/** Resume after a pause — shifts the start forward by the paused gap so elapsed excludes it. */
+function resumeRecording() {
+    if (!recorder || !state.paused)
+        return;
+    recordingStartMs += Date.now() - pauseStartedMs;
+    state.paused = false;
+    void recorder.resume();
+    render();
+    startTimerLoop();
 }
 /**
  * Shared transcription tail for BOTH a mic recording and a shared WhatsApp voice note. Sends the
@@ -537,18 +581,20 @@ function renderCompose() {
     </main>`;
 }
 function renderRecording() {
+    const paused = state.paused;
     return `
     <main class="screen screen-recording">
       <div class="rec-status" role="status" aria-live="polite">
-        <span class="rec-dot"></span>
+        <span class="rec-dot${paused ? ' paused' : ''}"></span>
         <span class="rec-timer" id="timer">${formatTime(state.elapsedSeconds)}</span>
-        <span class="rec-label">Listening…</span>
+        <span class="rec-label">${paused ? 'Paused' : 'Listening…'}</span>
       </div>
       <div class="waveform" id="waveform" aria-hidden="true">
         ${state.levels.map((l) => `<span class="wave-bar" style="height:${barHeight(l)}%"></span>`).join('')}
       </div>
       <p class="limit-warning" id="limit-warning" hidden>Getting long — stop soon (~10 min).</p>
       <div class="rec-actions">
+        <button class="btn btn-subtle btn-pause" id="pause-btn">${paused ? '▶ Resume' : '⏸ Pause'}</button>
         <button class="btn btn-ghost" id="cancel-btn">Cancel</button>
         <button class="btn btn-primary" id="stop-btn">Stop &amp; transcribe</button>
       </div>
@@ -769,6 +815,12 @@ function wireScreen() {
         case 'recording':
             document.getElementById('stop-btn')?.addEventListener('click', () => void finishRecording());
             document.getElementById('cancel-btn')?.addEventListener('click', cancelRecording);
+            document.getElementById('pause-btn')?.addEventListener('click', () => {
+                if (state.paused)
+                    resumeRecording();
+                else
+                    pauseRecording();
+            });
             break;
         case 'review':
             wireReview();

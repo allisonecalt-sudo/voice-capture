@@ -170,6 +170,14 @@ body {
   align-items: flex-end;
   gap: var(--s2);
   padding-top: var(--s2);
+  /* Pin the input + action button to the visible bottom so they're NEVER below the
+     fold — pairs with #app's 100dvh + the viewport interactive-widget=resizes-content
+     (keyboard shrinks the layout instead of covering the composer). Solid bg so the
+     canvas hint never shows through when content scrolls under it. */
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  z-index: 2;
 }
 .composer-input {
   flex: 1 1 auto;
@@ -240,6 +248,10 @@ body {
   background: var(--danger);
   animation: pulse 1.1s ease-in-out infinite;
 }
+.rec-dot.paused {
+  animation: none;
+  background: var(--text-3);
+}
 .rec-timer {
   font-size: 34px;
   font-weight: 600;
@@ -283,12 +295,18 @@ body {
 }
 .rec-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--s3);
   width: 100%;
   max-width: 340px;
 }
 .rec-actions .btn {
   flex: 1;
+}
+/* Pause/Resume takes its own row above the terminal Cancel / Stop pair — the
+   in-the-moment control gets prominence; the end actions sit together below. */
+.rec-actions .btn-pause {
+  flex-basis: 100%;
 }
 
 /* ── Transcribing ────────────────────────────────────────── */

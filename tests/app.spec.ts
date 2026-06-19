@@ -202,6 +202,16 @@ test.describe('compose home (no key needed for typing)', () => {
     await chip.click();
     await expect(page.locator('.screen-log')).toBeVisible();
   });
+
+  test('on a phone viewport the mic/send action sits in view without scrolling', async ({
+    page,
+  }) => {
+    // Regression guard for the Jun 18 bug: the composer action was below the fold on
+    // phone. The sticky bottom composer + 100dvh keep it reachable without scrolling.
+    await page.setViewportSize({ width: 412, height: 600 });
+    await expect(page.locator('#compose-action')).toBeInViewport();
+    await expect(page.locator('#draft')).toBeInViewport();
+  });
 });
 
 test.describe('voice is opt-in to save (with a key)', () => {
@@ -239,6 +249,25 @@ test.describe('voice is opt-in to save (with a key)', () => {
     await page.locator('#discard-btn').click();
     await expect(page.locator('.screen-compose')).toBeVisible();
     expect((await posts(page)).length).toBe(0);
+  });
+
+  test('Pause flips to Resume + a Paused state, and you can still stop & review after', async ({
+    page,
+  }) => {
+    await page.locator('#compose-action').click(); // mic → recording
+    await expect(page.locator('.screen-recording')).toBeVisible();
+    const pause = page.locator('#pause-btn');
+    await expect(pause).toContainText('Pause');
+    await pause.click();
+    await expect(pause).toContainText('Resume');
+    await expect(page.locator('.rec-label')).toHaveText('Paused');
+    await expect(page.locator('.rec-dot.paused')).toBeVisible();
+    // Resume → back to listening, and the recording still completes to review.
+    await pause.click();
+    await expect(page.locator('#pause-btn')).toContainText('Pause');
+    await expect(page.locator('.rec-label')).toHaveText('Listening…');
+    await page.locator('#stop-btn').click();
+    await expect(page.locator('#review-text')).toHaveValue(FAKE_TRANSCRIPT);
   });
 });
 

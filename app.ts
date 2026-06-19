@@ -48,9 +48,9 @@ const SHARE_ITEM_KEY = 'shared-audio';
 
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v9';
+const APP_VERSION = 'v10';
 // Last-edited date shown next to the version (e.g. "v9 · Jun 18, 2026"). Update with APP_VERSION.
-const BUILD_DATE = 'Jun 18, 2026';
+const BUILD_DATE = 'Jun 19, 2026';
 
 type Screen = 'compose' | 'recording' | 'transcribing' | 'review' | 'log' | 'settings';
 
@@ -65,6 +65,7 @@ interface AppState {
   copiedId: string | null; // which Log row last flashed "Copied ✓"
   confirmingClear: boolean; // Log: "Clear all" is armed (two-tap guard)
   needsKeyPrompt: boolean; // mic tapped without a key → show an inline explainer, not a cold bounce
+  paused: boolean; // recording is paused (mic held but not capturing)
 }
 
 const state: AppState = {
@@ -78,6 +79,7 @@ const state: AppState = {
   copiedId: null,
   confirmingClear: false,
   needsKeyPrompt: false,
+  paused: false,
 };
 
 // ── Key storage (localStorage only, device-only) ─────────────────────────────
@@ -165,6 +167,20 @@ class AudioRecorder {
     if (this.audioContext) void this.audioContext.close();
     this.chunks = [];
   }
+
+  /** Pause capture — suspends the context so no frames (and no paused silence) are recorded. */
+  async pause(): Promise<void> {
+    if (this.audioContext && this.audioContext.state === 'running') {
+      await this.audioContext.suspend();
+    }
+  }
+
+  /** Resume capture from a pause — picks up appending frames where it left off. */
+  async resume(): Promise<void> {
+    if (this.audioContext && this.audioContext.state === 'suspended') {
+      await this.audioContext.resume();
+    }
+  }
 }
 
 function rms(buf: Float32Array): number {
@@ -179,6 +195,17 @@ function rms(buf: Float32Array): number {
 let recorder: AudioRecorder | null = null;
 let timerId: number | null = null;
 let recordingStartMs = 0;
+let pauseStartedMs = 0;
+
+/** The 1-second recording tick — shared by begin and resume so pause math stays in one place. */
+function startTimerLoop(): void {
+  timerId = window.setInterval(() => {
+    state.elapsedSeconds = Math.floor((Date.now() - recordingStartMs) / 1000);
+    updateTimerText();
+    if (state.elapsedSeconds >= HARD_LIMIT_SECONDS) void finishRecording();
+    else if (state.elapsedSeconds === SOFT_LIMIT_SECONDS) updateLimitWarning();
+  }, 1000);
+}
 
 async function beginRecording(): Promise<void> {
   state.error = null;
@@ -206,15 +233,11 @@ async function beginRecording(): Promise<void> {
 
   state.screen = 'recording';
   state.elapsedSeconds = 0;
+  state.paused = false;
   recordingStartMs = Date.now();
   render();
 
-  timerId = window.setInterval(() => {
-    state.elapsedSeconds = Math.floor((Date.now() - recordingStartMs) / 1000);
-    updateTimerText();
-    if (state.elapsedSeconds >= HARD_LIMIT_SECONDS) void finishRecording();
-    else if (state.elapsedSeconds === SOFT_LIMIT_SECONDS) updateLimitWarning();
-  }, 1000);
+  startTimerLoop();
 }
 
 async function finishRecording(): Promise<void> {
@@ -223,6 +246,7 @@ async function finishRecording(): Promise<void> {
     window.clearInterval(timerId);
     timerId = null;
   }
+  state.paused = false;
   const durationSeconds = state.elapsedSeconds;
   state.screen = 'transcribing';
   render();
@@ -250,7 +274,31 @@ function cancelRecording(): void {
   }
   state.screen = 'compose';
   state.elapsedSeconds = 0;
+  state.paused = false;
   render();
+}
+
+/** Pause the live recording — freezes the timer + waveform, keeps the mic+buffer alive. */
+function pauseRecording(): void {
+  if (!recorder || state.paused) return;
+  if (timerId !== null) {
+    window.clearInterval(timerId);
+    timerId = null;
+  }
+  pauseStartedMs = Date.now();
+  state.paused = true;
+  void recorder.pause();
+  render();
+}
+
+/** Resume after a pause — shifts the start forward by the paused gap so elapsed excludes it. */
+function resumeRecording(): void {
+  if (!recorder || !state.paused) return;
+  recordingStartMs += Date.now() - pauseStartedMs;
+  state.paused = false;
+  void recorder.resume();
+  render();
+  startTimerLoop();
 }
 
 /**
@@ -601,18 +649,20 @@ function renderCompose(): string {
 }
 
 function renderRecording(): string {
+  const paused = state.paused;
   return `
     <main class="screen screen-recording">
       <div class="rec-status" role="status" aria-live="polite">
-        <span class="rec-dot"></span>
+        <span class="rec-dot${paused ? ' paused' : ''}"></span>
         <span class="rec-timer" id="timer">${formatTime(state.elapsedSeconds)}</span>
-        <span class="rec-label">Listening…</span>
+        <span class="rec-label">${paused ? 'Paused' : 'Listening…'}</span>
       </div>
       <div class="waveform" id="waveform" aria-hidden="true">
         ${state.levels.map((l) => `<span class="wave-bar" style="height:${barHeight(l)}%"></span>`).join('')}
       </div>
       <p class="limit-warning" id="limit-warning" hidden>Getting long — stop soon (~10 min).</p>
       <div class="rec-actions">
+        <button class="btn btn-subtle btn-pause" id="pause-btn">${paused ? '▶ Resume' : '⏸ Pause'}</button>
         <button class="btn btn-ghost" id="cancel-btn">Cancel</button>
         <button class="btn btn-primary" id="stop-btn">Stop &amp; transcribe</button>
       </div>
@@ -844,6 +894,10 @@ function wireScreen(): void {
     case 'recording':
       document.getElementById('stop-btn')?.addEventListener('click', () => void finishRecording());
       document.getElementById('cancel-btn')?.addEventListener('click', cancelRecording);
+      document.getElementById('pause-btn')?.addEventListener('click', () => {
+        if (state.paused) resumeRecording();
+        else pauseRecording();
+      });
       break;
     case 'review':
       wireReview();
