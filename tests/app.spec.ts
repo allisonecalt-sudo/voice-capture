@@ -3,9 +3,9 @@
 //       AudioContext + the Gemini/Supabase fetches are stubbed via an init script so tests are
 //       hermetic and never hit a live API or write the prod inbox.
 // WHY:  the live transcription can't be CI-tested (no key, no mic), so we verify the STRUCTURE:
-//       typed capture sends straight to the inbox (source:text); voice is OPT-IN (record → review →
-//       Save sends source:voice, Discard sends nothing); the log lists/copies/deletes/clears; a
-//       shared WhatsApp note lands in review (not auto-saved). The WAV encoder is unit-checked.
+//       typed capture sends straight to the inbox (source:text); voice AUTO-SAVES on transcription
+//       (record → stop → POST source:voice, no review gate — her 2026-06-23 call); the log
+//       lists/copies/deletes/clears; a shared WhatsApp note also auto-saves. WAV encoder unit-checked.
 // DECIDED: mock at the browser-API boundary (navigator.mediaDevices, AudioContext, window.fetch,
 //       clipboard, caches) — app code stays untouched. Supabase POSTs are recorded on
 //       window.__supabasePosts so we can assert what reached the inbox; an offline variant rejects.
@@ -214,27 +214,20 @@ test.describe('compose home (no key needed for typing)', () => {
   });
 });
 
-test.describe('voice is opt-in to save (with a key)', () => {
+test.describe('voice auto-saves (with a key)', () => {
   test.beforeEach(async ({ page }) => {
     await setKey(page);
     await installMocks(page);
     await page.goto('/');
   });
 
-  test('record → stop → review shows the transcript; nothing saved yet', async ({ page }) => {
+  test('record → stop auto-saves the transcript as source:voice (no review gate)', async ({
+    page,
+  }) => {
     await page.locator('#compose-action').click(); // mic
     await expect(page.locator('.screen-recording')).toBeVisible();
     await page.locator('#stop-btn').click();
-    await expect(page.locator('#review-text')).toHaveValue(FAKE_TRANSCRIPT);
-    // Opt-in: the transcript is NOT in the inbox until she taps Save.
-    expect((await posts(page)).length).toBe(0);
-  });
-
-  test('Save sends the transcript as source:voice', async ({ page }) => {
-    await page.locator('#compose-action').click();
-    await page.locator('#stop-btn').click();
-    await expect(page.locator('#save-btn')).toBeVisible();
-    await page.locator('#save-btn').click();
+    // No opt-in: it lands back on compose and the transcript is already in the inbox.
     await expect(page.locator('.screen-compose')).toBeVisible();
     await expect.poll(async () => (await posts(page)).length).toBe(1);
     const [row] = await posts(page);
@@ -242,16 +235,7 @@ test.describe('voice is opt-in to save (with a key)', () => {
     expect(row.source).toBe('voice');
   });
 
-  test('Discard throws the transcript away — no POST', async ({ page }) => {
-    await page.locator('#compose-action').click();
-    await page.locator('#stop-btn').click();
-    await expect(page.locator('#discard-btn')).toBeVisible();
-    await page.locator('#discard-btn').click();
-    await expect(page.locator('.screen-compose')).toBeVisible();
-    expect((await posts(page)).length).toBe(0);
-  });
-
-  test('Pause flips to Resume + a Paused state, and you can still stop & review after', async ({
+  test('Pause flips to Resume + a Paused state, and stop still auto-saves after', async ({
     page,
   }) => {
     await page.locator('#compose-action').click(); // mic → recording
@@ -262,12 +246,15 @@ test.describe('voice is opt-in to save (with a key)', () => {
     await expect(pause).toContainText('Resume');
     await expect(page.locator('.rec-label')).toHaveText('Paused');
     await expect(page.locator('.rec-dot.paused')).toBeVisible();
-    // Resume → back to listening, and the recording still completes to review.
+    // Resume → back to listening, and the recording still completes and auto-saves.
     await pause.click();
     await expect(page.locator('#pause-btn')).toContainText('Pause');
     await expect(page.locator('.rec-label')).toHaveText('Listening…');
     await page.locator('#stop-btn').click();
-    await expect(page.locator('#review-text')).toHaveValue(FAKE_TRANSCRIPT);
+    await expect(page.locator('.screen-compose')).toBeVisible();
+    await expect.poll(async () => (await posts(page)).length).toBe(1);
+    const [row] = await posts(page);
+    expect(row.source).toBe('voice');
   });
 });
 
@@ -278,7 +265,7 @@ test.describe('shared WhatsApp voice note (Web Share Target)', () => {
     await page.goto('/');
   });
 
-  test('a shared note lands in review (opt-in), not auto-saved', async ({ page }) => {
+  test('a shared note auto-saves as source:voice', async ({ page }) => {
     await page.evaluate(async () => {
       const cache = await caches.open('voice-capture-share');
       const headers = new Headers();
@@ -288,8 +275,11 @@ test.describe('shared WhatsApp voice note (Web Share Target)', () => {
       await cache.put('shared-audio', new Response(audio, { headers }));
     });
     await page.goto('/?shared=1');
-    await expect(page.locator('#review-text')).toHaveValue(FAKE_TRANSCRIPT);
-    expect((await posts(page)).length).toBe(0); // not saved until she taps Save
+    // No review gate: the shared note transcribes and lands in the inbox on its own.
+    await expect.poll(async () => (await posts(page)).length).toBe(1);
+    const [row] = await posts(page);
+    expect(row.transcript).toBe(FAKE_TRANSCRIPT);
+    expect(row.source).toBe('voice');
     // One-shot: the cached share is consumed, and the ?shared flag stripped.
     const leftover = await page.evaluate(async () => {
       const cache = await caches.open('voice-capture-share');

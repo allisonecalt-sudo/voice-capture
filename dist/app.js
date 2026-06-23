@@ -7,18 +7,19 @@
 // WHY:  this app is her "door to Claude" — a brain-dump channel for CURRENT THOUGHTS, modelled
 //       on how she fires notes into WhatsApp-to-self and brings them to Claude. Two truths shaped
 //       this rebuild (her words, 2026-06-16): "it's not really where i track my to-do list… it's
-//       just like current thoughts", and voice notes are "more for just transcribing" → voice is
-//       OPT-IN to save (Save/Discard), typed text is the trustworthy stream and sends on tap.
+//       just like current thoughts". Voice was originally OPT-IN to save; 2026-06-23 she reversed
+//       that ("it's fine, auto-save, i don't really look") — voice now AUTO-SAVES like typed text,
+//       so a note can never strand on the phone unsent. Typing has always sent on tap.
 // DECIDED: compose-first (Drafts pattern); ONE morphing bar (WhatsApp/Telegram pattern: mic when
-//          empty, send when typed); typing needs NO key (only voice does); voice transcript drops
-//          into an editable field so a mishear is fixable before Save; calm dark theme, ONE accent,
-//          few surfaces (compose ↔ log ↔ settings), no tabs/FAB/tag-trees. Captures land in the
-//          Supabase voice_captures inbox (anon INSERT-only) tagged source='text'|'voice'; Claude
-//          reads + routes server-side. Web Share Target (a WhatsApp voice note shared in) is kept
-//          and funnels into the same record→review path.
+//          empty, send when typed); typing needs NO key (only voice does); a finished voice
+//          transcript AUTO-SAVES straight to the inbox (no review gate — 2026-06-23); calm dark
+//          theme, ONE accent, few surfaces (compose ↔ log ↔ settings), no tabs/FAB/tag-trees.
+//          Captures land in the Supabase voice_captures inbox (anon INSERT-only) tagged
+//          source='text'|'voice'; Claude reads + routes server-side. Web Share Target (a WhatsApp
+//          voice note shared in) is kept and funnels into the same record→auto-save path.
 // BUILT:  state machine + render(), AudioRecorder (getUserMedia → 16 kHz mono WAV), Gemini call,
-//          compose bar w/ morphing action + auto-grow, voice Save/Discard review, Log (copy/delete/
-//          clear-all), Settings, share-target ingest, local-first history + deferred Supabase sync.
+//          compose bar w/ morphing action + auto-grow, voice auto-save on transcription, Log
+//          (copy/delete/clear-all), Settings, share-target ingest, local-first history + sync.
 // NEXT:   hardware back-button integration + delete-undo are deliberate future polish.
 import { transcribeAudio } from './gemini.js';
 import { TARGET_SAMPLE_RATE, downsampleBuffer, mergeChunks, encodeWav, blobToBase64, } from './wav.js';
@@ -37,15 +38,13 @@ const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v10';
+const APP_VERSION = 'v11';
 // Last-edited date shown next to the version (e.g. "v9 · Jun 18, 2026"). Update with APP_VERSION.
-const BUILD_DATE = 'Jun 19, 2026';
+const BUILD_DATE = 'Jun 23, 2026';
 const state = {
     screen: 'compose',
     draft: '',
     elapsedSeconds: 0,
-    transcript: '',
-    reviewDuration: 0,
     error: null,
     levels: new Array(WAVEFORM_BARS).fill(0),
     copiedId: null,
@@ -180,7 +179,6 @@ function startTimerLoop() {
 }
 async function beginRecording() {
     state.error = null;
-    state.transcript = '';
     state.levels = new Array(WAVEFORM_BARS).fill(0);
     recorder = new AudioRecorder();
     recorder.onLevel = (level) => {
@@ -270,8 +268,10 @@ function resumeRecording() {
 }
 /**
  * Shared transcription tail for BOTH a mic recording and a shared WhatsApp voice note. Sends the
- * audio to Gemini and lands on the REVIEW screen — voice is opt-in, so nothing is saved until she
- * taps Save. On failure we drop her back to compose with a clear message (never a dead end).
+ * audio to Gemini and AUTO-SAVES the transcript straight to the Claude inbox — no opt-in review.
+ * (Her call 2026-06-23: "it's fine, auto-save, i don't really look" — an unsaved note that never
+ * reached the inbox was the real failure mode, so voice now behaves like typed text: saved on
+ * arrival.) On failure we drop her back to compose with a clear message (never a dead end).
  */
 async function transcribeBlob(blob, mimeType, durationSeconds) {
     state.screen = 'transcribing';
@@ -279,11 +279,21 @@ async function transcribeBlob(blob, mimeType, durationSeconds) {
     try {
         const base64 = await blobToBase64(blob);
         const transcript = await transcribeAudio(getKey(), base64, mimeType);
-        state.transcript = transcript;
-        state.reviewDuration = durationSeconds;
         state.error = null;
-        state.screen = 'review';
+        const text = transcript.trim();
+        if (!text) {
+            // Empty transcription (silence / no speech) — nothing to save; quietly return to compose.
+            state.screen = 'compose';
+            render();
+            showToast('Nothing to save');
+            return;
+        }
+        addCapture(text, durationSeconds, 'voice'); // local-first, never lose it
+        state.screen = 'compose';
         render();
+        showToast('Saved ✓');
+        buzz();
+        void syncPending();
     }
     catch (err) {
         failTranscription(err);
@@ -291,7 +301,6 @@ async function transcribeBlob(blob, mimeType, durationSeconds) {
 }
 function failTranscription(err) {
     state.error = err instanceof Error ? err.message : 'Transcription failed. Please try again.';
-    state.transcript = '';
     state.screen = 'compose';
     render();
     showToast('Transcription failed');
@@ -399,29 +408,6 @@ function startVoice() {
     }
     state.needsKeyPrompt = false;
     void beginRecording();
-}
-// ── Review actions (voice is opt-in to save) ──────────────────────────────────
-function saveVoice() {
-    const ta = document.getElementById('review-text');
-    const text = (ta?.value ?? state.transcript).trim();
-    if (!text) {
-        discardVoice();
-        return;
-    }
-    addCapture(text, state.reviewDuration, 'voice');
-    state.transcript = '';
-    state.error = null;
-    state.screen = 'compose';
-    render();
-    showToast('Saved ✓');
-    buzz();
-    void syncPending();
-}
-function discardVoice() {
-    state.transcript = '';
-    state.error = null;
-    state.screen = 'compose';
-    render();
 }
 async function copyText(text) {
     try {
@@ -531,9 +517,6 @@ function render() {
         case 'transcribing':
             el.innerHTML = renderTranscribing();
             break;
-        case 'review':
-            el.innerHTML = renderReview();
-            break;
         case 'log':
             el.innerHTML = renderLog();
             break;
@@ -606,22 +589,6 @@ function renderTranscribing() {
       <div class="spinner" role="status" aria-live="polite" aria-label="Transcribing"></div>
       <p class="transcribing-text">Transcribing…</p>
       <p class="muted-hint">Turning your voice into text.</p>
-    </main>`;
-}
-function renderReview() {
-    return `
-    <main class="screen screen-review">
-      ${errorBanner()}
-      <label class="field-label" for="review-text">Transcript</label>
-      <textarea class="review-text" id="review-text" dir="auto" spellcheck="false"
-                aria-label="Transcript">${escapeHtml(state.transcript)}</textarea>
-      <p class="muted-hint">Fix anything, then keep it or toss it.</p>
-      <div class="review-actions">
-        <button class="btn btn-ghost" id="discard-btn">Discard</button>
-        <button class="btn btn-subtle" id="review-copy">Copy</button>
-        <button class="btn btn-primary" id="save-btn">Save to Claude</button>
-      </div>
-      <div class="toast" id="toast" role="status" aria-live="polite"></div>
     </main>`;
 }
 function renderLog() {
@@ -822,9 +789,6 @@ function wireScreen() {
                     pauseRecording();
             });
             break;
-        case 'review':
-            wireReview();
-            break;
         case 'log':
             wireLog();
             break;
@@ -871,14 +835,6 @@ function wireCompose() {
     document.getElementById('compose-confirm')?.addEventListener('click', () => {
         state.screen = 'log';
         render();
-    });
-}
-function wireReview() {
-    document.getElementById('save-btn')?.addEventListener('click', saveVoice);
-    document.getElementById('discard-btn')?.addEventListener('click', discardVoice);
-    document.getElementById('review-copy')?.addEventListener('click', () => {
-        const ta = document.getElementById('review-text');
-        void copyText(ta?.value ?? state.transcript).then((ok) => showToast(ok ? 'Copied ✓' : 'Long-press to copy'));
     });
 }
 function wireLog() {
