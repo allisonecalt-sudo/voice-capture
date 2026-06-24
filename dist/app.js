@@ -23,7 +23,7 @@
 // NEXT:   hardware back-button integration + delete-undo are deliberate future polish.
 import { transcribeAudio } from './gemini.js';
 import { TARGET_SAMPLE_RATE, downsampleBuffer, mergeChunks, encodeWav, blobToBase64, } from './wav.js';
-import { addCapture, clearHistory, deleteCapture, loadHistory, syncPending } from './history.js';
+import { addCapture, clearHistory, deleteCapture, loadHistory, pruneSyncedLocal, syncPending, } from './history.js';
 import { fetchRemoteCaptures } from './supabase.js';
 import { currentEmail, getToken, isLoggedIn, login, logout } from './auth.js';
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -38,9 +38,9 @@ const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v11';
+const APP_VERSION = 'v12';
 // Last-edited date shown next to the version (e.g. "v9 · Jun 18, 2026"). Update with APP_VERSION.
-const BUILD_DATE = 'Jun 23, 2026';
+const BUILD_DATE = 'Jun 24, 2026';
 const state = {
     screen: 'compose',
     draft: '',
@@ -491,6 +491,9 @@ async function refreshRemoteLog() {
     }
     try {
         remoteCache = await fetchRemoteCaptures(token);
+        // The inbox read is now the source of truth for everything that's synced — drop local copies
+        // of synced notes so every logged-in device shows the SAME shared list and filed notes vanish.
+        pruneSyncedLocal();
         if (state.screen === 'log')
             render();
     }

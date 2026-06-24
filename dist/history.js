@@ -145,3 +145,19 @@ export async function syncPending() {
         saveHistory(items);
     return syncedCount;
 }
+/**
+ * After a successful logged-in inbox read, drop every local copy that has already SYNCED. Once a
+ * note reaches the inbox the server copy is the single source of truth: if it's still pending it
+ * shows via the remote read, and if Claude has filed it it's simply gone — either way the local
+ * duplicate is just clutter. This is what makes the Log IDENTICAL on every logged-in device (it
+ * shows the shared inbox) and makes a filed note vanish from the phone. UNSYNCED notes (not yet
+ * delivered) are always kept as the offline buffer. Returns the number of local copies dropped.
+ */
+export function pruneSyncedLocal() {
+    const items = loadHistory();
+    const kept = items.filter((i) => !i.synced);
+    const pruned = items.length - kept.length;
+    if (pruned > 0)
+        saveHistory(kept);
+    return pruned;
+}

@@ -399,11 +399,13 @@ test.describe('cross-device sync (logged in)', () => {
       },
       { hk: HISTORY_KEY, sk: SESSION_KEY }
     );
-    await installMocks(page, FAKE_TRANSCRIPT, true, REMOTE);
+    // Offline POST so the typed note STAYS unsynced — a synced local copy would now sync and be
+    // pruned (it lives in the shared inbox instead). The local buffer is only un-delivered notes.
+    await installMocks(page, FAKE_TRANSCRIPT, false, REMOTE);
     await page.goto('/');
 
     await page.locator('#open-log').click();
-    // Inbox row (phone) + the local unsynced note both show.
+    // Inbox row (phone) + the local UNSYNCED buffer note both show.
     await expect(page.locator('.log-card')).toHaveCount(2);
     await expect(page.locator('.log-text', { hasText: 'note from my phone' })).toBeVisible();
     await expect(page.locator('.log-text', { hasText: 'note typed right here' })).toBeVisible();
@@ -428,6 +430,54 @@ test.describe('cross-device sync (logged in)', () => {
     await expect(page.locator('.screen-log')).toBeVisible();
     await expect(page.locator('.log-sync')).toBeVisible();
     await expect(page.locator('.log-text', { hasText: 'note from my phone' })).toBeVisible();
+  });
+
+  test('a synced local note gone from the inbox (Claude filed it) is pruned from the phone', async ({
+    page,
+  }) => {
+    await page.addInitScript(
+      ({ hk, sk }: { hk: string; sk: string }) => {
+        window.localStorage.setItem(
+          sk,
+          JSON.stringify({
+            access_token: 'fake-access',
+            refresh_token: 'fake-refresh',
+            expires_at: Date.now() + 3_600_000,
+            email: 'allisonecalt@gmail.com',
+          })
+        );
+        // One SYNCED local note that is NOT in the inbox (REMOTE) below = Claude already filed it.
+        window.localStorage.setItem(
+          hk,
+          JSON.stringify([
+            {
+              id: 'filed1',
+              transcript: 'already filed note',
+              createdAt: new Date(Date.now() - 9_000).toISOString(),
+              synced: true,
+              source: 'voice',
+            },
+          ])
+        );
+      },
+      { hk: HISTORY_KEY, sk: SESSION_KEY }
+    );
+    await installMocks(page, FAKE_TRANSCRIPT, true, REMOTE); // REMOTE holds only 'note from my phone'
+    await page.goto('/');
+
+    await page.locator('#open-log').click();
+    // The filed local copy is pruned — only the shared inbox note remains (same on every device).
+    await expect(page.locator('.log-text', { hasText: 'note from my phone' })).toBeVisible();
+    await expect(page.locator('.log-text', { hasText: 'already filed note' })).toHaveCount(0);
+    // Pruned from localStorage, not just hidden.
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          (k: string) => JSON.parse(window.localStorage.getItem(k) ?? '[]').length,
+          HISTORY_KEY
+        )
+      )
+      .toBe(0);
   });
 });
 
