@@ -140,6 +140,12 @@ body {
   margin: var(--s2) 0;
 }
 
+.retry-prompt {
+  display: flex;
+  justify-content: center;
+  margin: var(--s2) 0;
+}
+
 .muted-hint {
   color: var(--text-3);
   font-size: 13px;

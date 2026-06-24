@@ -38,7 +38,7 @@ const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v12';
+const APP_VERSION = 'v13';
 // Last-edited date shown next to the version (e.g. "v9 · Jun 18, 2026"). Update with APP_VERSION.
 const BUILD_DATE = 'Jun 24, 2026';
 const state = {
@@ -51,6 +51,7 @@ const state = {
     confirmingClear: false,
     needsKeyPrompt: false,
     paused: false,
+    pendingVoice: null,
 };
 // ── Key storage (localStorage only, device-only) ─────────────────────────────
 function getKey() {
@@ -289,6 +290,7 @@ async function transcribeBlob(blob, mimeType, durationSeconds) {
             return;
         }
         addCapture(text, durationSeconds, 'voice'); // local-first, never lose it
+        state.pendingVoice = null; // succeeded — nothing left to retry
         state.screen = 'compose';
         render();
         showToast('Saved ✓');
@@ -296,6 +298,8 @@ async function transcribeBlob(blob, mimeType, durationSeconds) {
         void syncPending();
     }
     catch (err) {
+        // Hold the audio so the failure message ("recording is safe") is honest and Retry can re-send.
+        state.pendingVoice = { blob, mimeType, durationSeconds };
         failTranscription(err);
     }
 }
@@ -304,6 +308,14 @@ function failTranscription(err) {
     state.screen = 'compose';
     render();
     showToast('Transcription failed');
+}
+/** Re-run transcription on the held-back recording from a prior failed attempt. */
+function retryPendingVoice() {
+    const pending = state.pendingVoice;
+    if (!pending)
+        return;
+    state.error = null;
+    void transcribeBlob(pending.blob, pending.mimeType, pending.durationSeconds);
 }
 // ── Share target: a WhatsApp voice note shared INTO the app ───────────────────
 /**
@@ -543,6 +555,12 @@ function renderCompose() {
     </header>
     <main class="screen screen-compose">
       ${errorBanner()}
+      ${state.pendingVoice
+        ? `<div class="retry-prompt" role="status">
+        <button type="button" class="btn btn-primary" id="retry-voice">↻ Retry transcription</button>
+        <button type="button" class="btn btn-ghost" id="discard-voice" aria-label="Discard recording">✕ Discard</button>
+      </div>`
+        : ''}
       <div class="canvas">
         <p class="canvas-hint">Say it or type it.<br />It's saved to your Claude inbox.</p>
       </div>
@@ -823,6 +841,15 @@ function wireCompose() {
             sendComposed();
         else
             startVoice();
+    });
+    // Retry a recording whose transcription failed (held in state.pendingVoice).
+    document.getElementById('retry-voice')?.addEventListener('click', retryPendingVoice);
+    // Throw away a held recording she doesn't want — no save, no nag. (Her 2026-06-24 ask.)
+    document.getElementById('discard-voice')?.addEventListener('click', () => {
+        state.pendingVoice = null;
+        state.error = null;
+        render();
+        showToast('Discarded');
     });
     // Keyless-mic explainer: go set up voice, or dismiss and keep typing.
     document.getElementById('setup-voice')?.addEventListener('click', () => {

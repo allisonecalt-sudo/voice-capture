@@ -35,7 +35,8 @@ async function installMocks(
   page: import('@playwright/test').Page,
   transcript = FAKE_TRANSCRIPT,
   supabaseOnline = true,
-  remoteRows: unknown[] = []
+  remoteRows: unknown[] = [],
+  geminiFailFirst = 0
 ): Promise<void> {
   await page.addInitScript(
     ({
@@ -43,11 +44,13 @@ async function installMocks(
       online,
       host,
       remote,
+      failFirst,
     }: {
       t: string;
       online: boolean;
       host: string;
       remote: unknown[];
+      failFirst: number;
     }) => {
       const fakeTrack = { stop() {} } as unknown as MediaStreamTrack;
       const fakeStream = { getTracks: () => [fakeTrack] } as unknown as MediaStream;
@@ -92,6 +95,16 @@ async function installMocks(
       window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
         if (url.includes('generativelanguage.googleapis.com')) {
+          const w = window as unknown as { __geminiCalls: number };
+          w.__geminiCalls = (w.__geminiCalls ?? 0) + 1;
+          // Simulate Google's transient "model overloaded" 503 for the first N calls so the
+          // retry+fallback path is exercised; later calls succeed.
+          if (w.__geminiCalls <= failFirst) {
+            return new Response(
+              JSON.stringify({ error: { message: 'The model is overloaded. Please try again later.' } }),
+              { status: 503, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
           return new Response(
             JSON.stringify({ candidates: [{ content: { parts: [{ text: t }] } }] }),
             { status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -132,7 +145,13 @@ async function installMocks(
         value: { writeText: async () => {} },
       });
     },
-    { t: transcript, online: supabaseOnline, host: SUPABASE_HOST, remote: remoteRows }
+    {
+      t: transcript,
+      online: supabaseOnline,
+      host: SUPABASE_HOST,
+      remote: remoteRows,
+      failFirst: geminiFailFirst,
+    }
   );
 }
 
@@ -255,6 +274,54 @@ test.describe('voice auto-saves (with a key)', () => {
     await expect.poll(async () => (await posts(page)).length).toBe(1);
     const [row] = await posts(page);
     expect(row.source).toBe('voice');
+  });
+});
+
+test.describe('Gemini "busy" (503) resilience', () => {
+  test('a transient overload self-heals: retry+fallback still auto-saves', async ({ page }) => {
+    await setKey(page);
+    // First two calls 503 ("model overloaded"); the retry loop's 3rd call succeeds.
+    await installMocks(page, FAKE_TRANSCRIPT, true, [], 2);
+    await page.goto('/');
+    await page.locator('#compose-action').click(); // mic
+    await page.locator('#stop-btn').click();
+    // No error surfaced to her; the note lands in the inbox on its own.
+    await expect.poll(async () => (await posts(page)).length).toBe(1);
+    const [row] = await posts(page);
+    expect(row.source).toBe('voice');
+    await expect(page.locator('.error-banner')).toHaveCount(0);
+  });
+
+  test('a persistent overload shows a plain message + a Retry that recovers', async ({ page }) => {
+    await setKey(page);
+    // Fail every attempt this build makes (MAX_ATTEMPTS=4) → she sees the message + Retry.
+    await installMocks(page, FAKE_TRANSCRIPT, true, [], 4);
+    await page.goto('/');
+    await page.locator('#compose-action').click(); // mic
+    await page.locator('#stop-btn').click();
+    // Honest, non-scary message + the held recording offered back as a one-tap Retry.
+    await expect(page.locator('.error-banner')).toContainText('busy');
+    await expect(page.locator('#retry-voice')).toBeVisible();
+    expect(await posts(page)).toHaveLength(0); // nothing saved yet
+    // The overload has since cleared (calls 5+ succeed) → Retry transcribes + saves.
+    await page.locator('#retry-voice').click();
+    await expect.poll(async () => (await posts(page)).length).toBe(1);
+    expect((await posts(page))[0].source).toBe('voice');
+    await expect(page.locator('#retry-voice')).toHaveCount(0); // cleared after success
+  });
+
+  test('a held recording can be discarded — never saves, no nag', async ({ page }) => {
+    await setKey(page);
+    await installMocks(page, FAKE_TRANSCRIPT, true, [], 4); // all attempts fail → held + offered
+    await page.goto('/');
+    await page.locator('#compose-action').click(); // mic
+    await page.locator('#stop-btn').click();
+    await expect(page.locator('#discard-voice')).toBeVisible();
+    await page.locator('#discard-voice').click();
+    // Gone: prompt cleared, nothing saved, error banner gone.
+    await expect(page.locator('#retry-voice')).toHaveCount(0);
+    await expect(page.locator('.error-banner')).toHaveCount(0);
+    expect(await posts(page)).toHaveLength(0);
   });
 });
 
