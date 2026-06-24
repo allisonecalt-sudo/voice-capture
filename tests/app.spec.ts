@@ -101,7 +101,9 @@ async function installMocks(
           // retry+fallback path is exercised; later calls succeed.
           if (w.__geminiCalls <= failFirst) {
             return new Response(
-              JSON.stringify({ error: { message: 'The model is overloaded. Please try again later.' } }),
+              JSON.stringify({
+                error: { message: 'The model is overloaded. Please try again later.' },
+              }),
               { status: 503, headers: { 'Content-Type': 'application/json' } }
             );
           }
