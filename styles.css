@@ -617,3 +617,62 @@ body {
   transform: translateX(-50%) translateY(0);
   pointer-events: auto;
 }
+
+/* ── Notes from Claude (Claude-pushed voice notes + written memos) ───────────── *
+   Her "easy access to 3 things": her own recordings live at the compose home; the Log groups
+   the two Claude kinds (🎧 voice / 📝 memo) above her own notes. Distinct but quiet — a thin
+   accent edge + ONE unheard dot (the single signal), listened = a calm success tick. No red,
+   no shame badge (anti-quit register). Accent (the app's one blue) is used only as a signal. */
+.log-section-title {
+  margin: var(--s5) var(--s1) var(--s2);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-2);
+}
+.log-section-title:first-of-type {
+  margin-top: var(--s2);
+}
+.claude-card {
+  position: relative;
+  border-left: 2px solid var(--accent);
+}
+.claude-card.is-unlistened {
+  background: var(--surface-2);
+}
+.claude-card.is-unlistened::after {
+  content: '';
+  position: absolute;
+  top: var(--s3);
+  inset-inline-end: var(--s3);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.claude-context {
+  margin: 0 0 var(--s2);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  letter-spacing: 0.01em;
+}
+.claude-audio {
+  width: 100%;
+  height: 36px;
+  margin: var(--s1) 0 var(--s2);
+}
+.claude-card .log-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+.listened-badge {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--success);
+}
+.mark-listened {
+  font-size: 13px;
+}

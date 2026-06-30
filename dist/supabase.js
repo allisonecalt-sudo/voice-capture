@@ -76,3 +76,26 @@ export async function fetchRemoteCaptures(token, limit = 200) {
     const rows = (await res.json());
     return Array.isArray(rows) ? rows : [];
 }
+/**
+ * Mark one "Note from Claude" as listened (authenticated UPDATE). Anon is insert-only, so this
+ * needs a login token — same surface as fetchRemoteCaptures. Sets `listened=true` + `listened_at`
+ * so "✓ Listened" sticks across her devices. Throws on any non-2xx so the caller can stay quiet.
+ * @param token a valid access token from auth.getToken()
+ * @param id    the voice_captures row id to mark
+ */
+export async function markListened(token, id) {
+    const url = `${SUPABASE_URL}?id=eq.${encodeURIComponent(id)}`;
+    const res = await fetch(url, {
+        method: 'PATCH',
+        headers: {
+            apikey: SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal',
+        },
+        body: JSON.stringify({ listened: true, listened_at: new Date().toISOString() }),
+    });
+    if (!res.ok) {
+        throw new Error(`Supabase markListened failed: HTTP ${res.status}`);
+    }
+}

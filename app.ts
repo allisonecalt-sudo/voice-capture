@@ -38,7 +38,7 @@ import {
   pruneSyncedLocal,
   syncPending,
 } from './history.js';
-import { fetchRemoteCaptures, type RemoteCapture } from './supabase.js';
+import { fetchRemoteCaptures, markListened, type RemoteCapture } from './supabase.js';
 import { currentEmail, getToken, isLoggedIn, login, logout } from './auth.js';
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -56,9 +56,9 @@ const SHARE_ITEM_KEY = 'shared-audio';
 
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v13';
+const APP_VERSION = 'v14';
 // Last-edited date shown next to the version (e.g. "v9 · Jun 18, 2026"). Update with APP_VERSION.
-const BUILD_DATE = 'Jun 24, 2026';
+const BUILD_DATE = 'Jun 30, 2026';
 
 type Screen = 'compose' | 'recording' | 'transcribing' | 'log' | 'settings';
 
@@ -524,6 +524,9 @@ interface LogRow {
   synced: boolean;
   source?: string;
   remote: boolean; // from the server inbox (read-only) vs the local buffer (deletable)
+  fromClaude?: boolean; // a Claude-pushed "Note from Claude" (vs one of her own captures)
+  audioUrl?: string | null; // voice-note she can play (Claude notes only)
+  listened?: boolean; // has she heard this Claude note yet
 }
 
 let remoteCache: RemoteCapture[] | null = null; // last successful inbox read (null = none yet)
@@ -539,6 +542,7 @@ function buildLogRows(): LogRow[] {
       synced: synced && l.synced,
       source: l.source,
       remote: false,
+      fromClaude: false,
     }));
 
   if (!isLoggedIn() || remoteCache === null) return localRows();
@@ -550,6 +554,9 @@ function buildLogRows(): LogRow[] {
     synced: true,
     source: r.source,
     remote: true,
+    fromClaude: r.from_claude === true,
+    audioUrl: r.audio_url ?? null,
+    listened: r.listened === true,
   }));
   // Only local notes the inbox doesn't already have (offline / not-yet-synced) ride alongside.
   const remoteTexts = new Set(remoteCache.map((r) => r.transcript.trim()));
@@ -703,9 +710,24 @@ function renderLog(): string {
            }</button>
          </div>`
     : '';
-  const list = items.length
-    ? `<ul class="log-list">${items.map(renderLogCard).join('')}</ul>`
-    : `<p class="log-empty">Nothing captured yet.</p>`;
+  const claudeRows = items.filter((i) => i.fromClaude);
+  const selfRows = items.filter((i) => !i.fromClaude);
+  const section = (title: string, rows: LogRow[]): string =>
+    rows.length
+      ? `<h2 class="log-section-title">${title}</h2><ul class="log-list">${rows
+          .map(renderLogCard)
+          .join('')}</ul>`
+      : '';
+  // When there are Claude notes, split into two labelled sections (Notes from Claude up top so the
+  // unheard ones lead); otherwise keep the plain single list — unchanged from before.
+  let list: string;
+  if (claudeRows.length) {
+    list = section('🤖 Notes from Claude', claudeRows) + section('🗣️ Note to Self', selfRows);
+  } else if (items.length) {
+    list = `<ul class="log-list">${items.map(renderLogCard).join('')}</ul>`;
+  } else {
+    list = `<p class="log-empty">Nothing captured yet.</p>`;
+  }
   return `
     <header class="topbar">
       <button class="icon-btn" id="log-back" aria-label="Back" title="Back">←</button>
@@ -723,6 +745,7 @@ function renderLog(): string {
 }
 
 function renderLogCard(it: LogRow): string {
+  if (it.fromClaude) return renderClaudeCard(it);
   const icon = it.source === 'text' ? '✍️' : '🎤';
   const copied = state.copiedId === it.id;
   // Remote rows are read-only (the inbox; Claude clears them after routing) — no delete button.
@@ -744,6 +767,50 @@ function renderLogCard(it: LogRow): string {
         </span>
       </div>
     </li>`;
+}
+
+/** A "Note from Claude": a short context line (what + when), the text, an optional voice-note
+ *  player, and a listened state. Unheard notes carry an accent until she plays or marks them. */
+function renderClaudeCard(it: LogRow): string {
+  const copied = state.copiedId === it.id;
+  const player = it.audioUrl
+    ? `<audio class="claude-audio" controls preload="none" data-id="${escapeHtml(
+        it.id
+      )}" src="${escapeHtml(it.audioUrl)}"></audio>`
+    : '';
+  const listened = it.listened
+    ? `<span class="listened-badge">✓ Listened</span>`
+    : `<button class="btn-text mark-listened" data-id="${escapeHtml(it.id)}">Mark as listened</button>`;
+  return `
+    <li class="log-card claude-card${it.listened ? '' : ' is-unlistened'}" data-card-id="${escapeHtml(
+      it.id
+    )}">
+      <p class="claude-context">${
+        it.audioUrl ? '🎧 Voice note' : '📝 Memo'
+      } from Claude · ${escapeHtml(absoluteTime(it.createdAt))}</p>
+      ${player}
+      <p class="log-text" dir="auto">${escapeHtml(it.transcript)}</p>
+      <div class="log-meta">
+        ${listened}
+        <span class="log-card-actions">
+          <button class="icon-btn sm log-copy" data-id="${escapeHtml(it.id)}" aria-label="Copy">${
+            copied ? 'Copied ✓' : '⧉'
+          }</button>
+        </span>
+      </div>
+    </li>`;
+}
+
+/** Absolute "Jun 30, 7:36 PM"-style stamp for a Claude note (her "what time" context line). */
+function absoluteTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }
 
 function renderSettings(): string {
@@ -1007,6 +1074,62 @@ function wireLog(): void {
       showToast('Deleted');
     });
   });
+
+  // Notes from Claude — "Mark as listened" → persist + re-render (swaps the button for the badge).
+  document.querySelectorAll<HTMLButtonElement>('.mark-listened').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.id;
+      if (!id) return;
+      void persistListened(id);
+      render();
+    });
+  });
+  // Playing the voice-note counts as hearing it — mark it the instant it starts, but WITHOUT a
+  // re-render (that would stop playback). Update just this card's badge in place.
+  document.querySelectorAll<HTMLAudioElement>('audio.claude-audio').forEach((audio) => {
+    audio.addEventListener(
+      'play',
+      () => {
+        const id = audio.dataset.id;
+        if (!id) return;
+        void persistListened(id);
+        markListenedInDom(id);
+      },
+      { once: true }
+    );
+  });
+}
+
+/** Flip a Claude note to listened: optimistic local-cache update + the authenticated PATCH.
+ *  Never throws (offline just shows it again next read) — the UI has already moved on. */
+async function persistListened(id: string): Promise<void> {
+  if (remoteCache) {
+    const row = remoteCache.find((r) => r.id === id);
+    if (row) row.listened = true;
+  }
+  try {
+    const token = await getToken();
+    if (token) await markListened(token, id);
+  } catch (err) {
+    console.warn('[brain-dump] markListened failed:', err);
+  }
+}
+
+/** Mark one Claude card listened in the DOM without a full re-render (so the audio keeps playing):
+ *  drop the unheard accent and swap the button for the "✓ Listened" badge. */
+function markListenedInDom(id: string): void {
+  const card = document.querySelector<HTMLElement>(
+    `.claude-card[data-card-id="${CSS.escape(id)}"]`
+  );
+  if (!card) return;
+  card.classList.remove('is-unlistened');
+  const btn = card.querySelector('.mark-listened');
+  if (btn) {
+    const badge = document.createElement('span');
+    badge.className = 'listened-badge';
+    badge.textContent = '✓ Listened';
+    btn.replaceWith(badge);
+  }
 }
 
 function wireSettings(): void {

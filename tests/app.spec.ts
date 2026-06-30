@@ -548,6 +548,53 @@ test.describe('cross-device sync (logged in)', () => {
       )
       .toBe(0);
   });
+
+  test('a Note from Claude shows in its own section with a player + a listened toggle', async ({
+    page,
+  }) => {
+    await page.addInitScript(
+      ({ sk }: { sk: string }) => {
+        window.localStorage.setItem(
+          sk,
+          JSON.stringify({
+            access_token: 'fake-access',
+            refresh_token: 'fake-refresh',
+            expires_at: Date.now() + 3_600_000,
+            email: 'allisonecalt@gmail.com',
+          })
+        );
+      },
+      { sk: SESSION_KEY }
+    );
+    const claudeRemote = [
+      {
+        id: 'claude1',
+        transcript: 'מכונים list — your eval-day options',
+        source: 'text',
+        created_at: new Date(Date.now() - 10_000).toISOString(),
+        from_claude: true,
+        audio_url:
+          'https://hpiyvnfhoqnnnotrmwaz.supabase.co/storage/v1/object/public/voice-notes/claude1.mp3',
+        listened: false,
+      },
+    ];
+    await installMocks(page, FAKE_TRANSCRIPT, true, claudeRemote);
+    await page.goto('/');
+
+    await page.locator('#open-log').click();
+    // Its own labelled section, an audio player, and an unheard accent.
+    await expect(
+      page.locator('.log-section-title', { hasText: 'Notes from Claude' })
+    ).toBeVisible();
+    const card = page.locator('.claude-card');
+    await expect(card).toHaveCount(1);
+    await expect(card.locator('audio.claude-audio')).toHaveCount(1);
+    await expect(card).toHaveClass(/is-unlistened/);
+    // Marking listened swaps the button for the badge and drops the accent.
+    await card.locator('.mark-listened').click();
+    await expect(card.locator('.listened-badge')).toBeVisible();
+    await expect(page.locator('.claude-card.is-unlistened')).toHaveCount(0);
+  });
 });
 
 test.describe('offline (Supabase rejects)', () => {

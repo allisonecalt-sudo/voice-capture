@@ -94,6 +94,12 @@ export interface RemoteCapture {
   category?: Category | null;
   duration_seconds?: number;
   created_at: string;
+  // "Notes from Claude" extras (Claude-pushed rows): a voice-note URL she can play, a flag that
+  // splits these from her own captures, and the have-I-heard-it state (shown as "✓ Listened").
+  from_claude?: boolean;
+  audio_url?: string | null;
+  listened?: boolean;
+  listened_at?: string | null;
 }
 
 /**
@@ -114,4 +120,28 @@ export async function fetchRemoteCaptures(token: string, limit = 200): Promise<R
   }
   const rows = (await res.json()) as RemoteCapture[];
   return Array.isArray(rows) ? rows : [];
+}
+
+/**
+ * Mark one "Note from Claude" as listened (authenticated UPDATE). Anon is insert-only, so this
+ * needs a login token — same surface as fetchRemoteCaptures. Sets `listened=true` + `listened_at`
+ * so "✓ Listened" sticks across her devices. Throws on any non-2xx so the caller can stay quiet.
+ * @param token a valid access token from auth.getToken()
+ * @param id    the voice_captures row id to mark
+ */
+export async function markListened(token: string, id: string): Promise<void> {
+  const url = `${SUPABASE_URL}?id=eq.${encodeURIComponent(id)}`;
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Prefer: 'return=minimal',
+    },
+    body: JSON.stringify({ listened: true, listened_at: new Date().toISOString() }),
+  });
+  if (!res.ok) {
+    throw new Error(`Supabase markListened failed: HTTP ${res.status}`);
+  }
 }
