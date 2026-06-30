@@ -68,7 +68,7 @@ function isHistoryItem(value) {
  * Writes to localStorage immediately — this is the never-lose-it guarantee. Syncing is
  * the caller's next step (addCapture does NOT touch the network).
  */
-export function addCapture(transcript, durationSeconds, source = 'voice') {
+export function addCapture(transcript, durationSeconds, source = 'voice', reply) {
     const item = {
         id: newId(),
         transcript,
@@ -77,6 +77,10 @@ export function addCapture(transcript, durationSeconds, source = 'voice') {
         synced: false,
         source,
     };
+    if (reply && reply.replyTo) {
+        item.replyTo = reply.replyTo;
+        item.replySnippet = reply.replySnippet;
+    }
     const items = loadHistory();
     items.unshift(item);
     saveHistory(items);
@@ -133,7 +137,10 @@ export async function syncPending() {
         if (item.synced)
             continue;
         try {
-            await saveCapture(item.transcript, item.durationSeconds, item.category, item.source);
+            const reply = item.replyTo != null
+                ? { replyTo: item.replyTo, replySnippet: item.replySnippet ?? '' }
+                : undefined;
+            await saveCapture(item.transcript, item.durationSeconds, item.category, item.source, reply);
             item.synced = true;
             syncedCount++;
         }

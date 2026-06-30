@@ -29,19 +29,25 @@ export const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiO
 /**
  * POST one transcript to the voice_captures inbox. Insert-only: anon has no SELECT, so we send
  * `Prefer: return=minimal` and read nothing back (asking for the row back would 401). The
- * routing tag — when set — is part of THIS insert, because there is no later update path.
+ * routing tag — and any reply context — is part of THIS insert, because there is no later update.
  * @param transcript       the verbatim text to send to Claude (required, non-empty)
  * @param durationSeconds  optional recording length; omitted from the body when undefined
  * @param category         optional routing tag ('todo' | 'thought'); omitted when undefined
+ * @param source           how it entered the app ('voice' | 'text'); defaults to 'voice'
+ * @param reply            optional thread context (parent id + snippet) when this is a reply
  * @throws on any non-2xx (or network failure) so the caller can mark it "will sync".
  */
-export async function saveCapture(transcript, durationSeconds, category, source = 'voice') {
+export async function saveCapture(transcript, durationSeconds, category, source = 'voice', reply) {
     const payload = { transcript, source };
     if (typeof durationSeconds === 'number' && Number.isFinite(durationSeconds)) {
         payload.duration_seconds = Math.round(durationSeconds);
     }
     if (category === 'todo' || category === 'thought') {
         payload.category = category;
+    }
+    if (reply && reply.replyTo) {
+        payload.reply_to = reply.replyTo;
+        payload.reply_snippet = reply.replySnippet;
     }
     const res = await fetch(SUPABASE_URL, {
         method: 'POST',
@@ -66,7 +72,9 @@ export async function saveCapture(transcript, durationSeconds, category, source 
  * @throws on any non-2xx so the caller can fall back to local-only history.
  */
 export async function fetchRemoteCaptures(token, limit = 200) {
-    const url = `${SUPABASE_URL}?select=*&order=created_at.desc&limit=${limit}`;
+    // Archived rows (soft-deleted) are filtered server-side so they never reach any view. They still
+    // exist in the table (pullable later); the app simply never reads them back.
+    const url = `${SUPABASE_URL}?select=*&archived=eq.false&order=created_at.desc&limit=${limit}`;
     const res = await fetch(url, {
         headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` },
     });
@@ -98,4 +106,36 @@ export async function markListened(token, id) {
     if (!res.ok) {
         throw new Error(`Supabase markListened failed: HTTP ${res.status}`);
     }
+}
+/**
+ * Set a row's `archived` flag (authenticated UPDATE — anon is insert-only). Archiving is the app's
+ * "delete": the row drops out of every view but is never destroyed (her "archive nicely, pullable"
+ * rule), so the Undo snackbar can flip it straight back. Works on HER captures AND Claude's notes.
+ * @param token a valid access token from auth.getToken()
+ * @param id    the voice_captures row id
+ * @param archived true to archive (hide), false to restore (Undo)
+ */
+async function setArchived(token, id, archived) {
+    const url = `${SUPABASE_URL}?id=eq.${encodeURIComponent(id)}`;
+    const res = await fetch(url, {
+        method: 'PATCH',
+        headers: {
+            apikey: SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal',
+        },
+        body: JSON.stringify({ archived }),
+    });
+    if (!res.ok) {
+        throw new Error(`Supabase setArchived failed: HTTP ${res.status}`);
+    }
+}
+/** Soft-archive a capture (hide it from every view; never deletes — pullable later). */
+export function archiveCapture(token, id) {
+    return setArchived(token, id, true);
+}
+/** Restore an archived capture back into view (the Undo of archive). */
+export function unarchiveCapture(token, id) {
+    return setArchived(token, id, false);
 }

@@ -90,6 +90,7 @@ async function installMocks(
       (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
 
       (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts = [];
+      (window as unknown as { __supabasePatches: unknown[] }).__supabasePatches = [];
 
       const realFetch = window.fetch.bind(window);
       window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -127,11 +128,22 @@ async function installMocks(
         if (url.includes(host) && url.includes('voice_captures')) {
           const method = (init?.method ?? 'GET').toUpperCase();
           if (method === 'GET') {
-            // Authenticated inbox read-back (cross-device history).
+            // Authenticated inbox read-back (cross-device history). The app appends
+            // `archived=eq.false`; the canned rows already exclude archived ones.
             return new Response(JSON.stringify(remote), {
               status: 200,
               headers: { 'Content-Type': 'application/json' },
             });
+          }
+          if (method === 'PATCH') {
+            // Authenticated UPDATE (markListened / archive / unarchive). Record on a separate
+            // channel so tests can assert what was patched without polluting the insert log.
+            const bodyText = typeof init?.body === 'string' ? init.body : '';
+            const patches = (window as unknown as { __supabasePatches: unknown[] })
+              .__supabasePatches;
+            patches.push({ url, body: bodyText ? JSON.parse(bodyText) : null });
+            if (!online) return Promise.reject(new TypeError('Failed to fetch'));
+            return new Response(null, { status: 204 });
           }
           const bodyText = typeof init?.body === 'string' ? init.body : '';
           const posts = (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts;
@@ -160,6 +172,17 @@ async function installMocks(
 function posts(page: import('@playwright/test').Page): Promise<SupabasePost[]> {
   return page.evaluate(
     () => (window as unknown as { __supabasePosts: SupabasePost[] }).__supabasePosts
+  );
+}
+
+interface SupabasePatch {
+  url: string;
+  body: Record<string, unknown> | null;
+}
+
+function patches(page: import('@playwright/test').Page): Promise<SupabasePatch[]> {
+  return page.evaluate(
+    () => (window as unknown as { __supabasePatches: SupabasePatch[] }).__supabasePatches
   );
 }
 
@@ -401,9 +424,12 @@ test.describe('log', () => {
     await expect(page.locator('.log-copy').first()).toHaveText('Copied ✓');
   });
 
-  test('delete removes the row from the list and localStorage', async ({ page }) => {
+  test('archive removes a local note from the list and localStorage', async ({ page }) => {
+    // Logged-out, local-only notes archive by dropping from the device buffer (nothing reached the
+    // inbox yet) — the visible 🗑 is data-local-del. Both seed rows live in the "My Notes" segment.
     await page.locator('#open-log').click();
-    await page.locator('.log-del').first().click();
+    await expect(page.locator('.log-card')).toHaveCount(2);
+    await page.locator('.log-archive[data-local-del]').first().click();
     await expect(page.locator('.log-card')).toHaveCount(1);
     const remaining = await page.evaluate(
       (k: string) => JSON.parse(window.localStorage.getItem(k) ?? '[]').length,
@@ -439,7 +465,7 @@ test.describe('cross-device sync (logged in)', () => {
     },
   ];
 
-  test('a logged-in Log merges the inbox with local notes and marks remote read-only', async ({
+  test('a logged-in Log merges the inbox with local notes; remote archives, local drops', async ({
     page,
   }) => {
     await page.addInitScript(
@@ -474,13 +500,15 @@ test.describe('cross-device sync (logged in)', () => {
     await page.goto('/');
 
     await page.locator('#open-log').click();
-    // Inbox row (phone) + the local UNSYNCED buffer note both show.
+    // Both are her own notes → the "My Notes" segment. Inbox row (phone) + local UNSYNCED buffer.
     await expect(page.locator('.log-card')).toHaveCount(2);
     await expect(page.locator('.log-text', { hasText: 'note from my phone' })).toBeVisible();
     await expect(page.locator('.log-text', { hasText: 'note typed right here' })).toBeVisible();
-    // "Synced" banner; the remote row is read-only (no delete) — only the local note can be deleted.
+    // "Synced" banner. v15: every card has a 🗑 — the remote/synced one soft-archives
+    // (data-archive), the local-only one drops from the device buffer (data-local-del).
     await expect(page.locator('.log-sync')).toBeVisible();
-    await expect(page.locator('.log-del')).toHaveCount(1);
+    await expect(page.locator('.log-archive[data-archive]')).toHaveCount(1);
+    await expect(page.locator('.log-archive[data-local-del]')).toHaveCount(1);
   });
 
   test('logging in from Settings shows the inbox notes', async ({ page }) => {
@@ -549,7 +577,7 @@ test.describe('cross-device sync (logged in)', () => {
       .toBe(0);
   });
 
-  test('a Note from Claude shows in its own section with a player + a listened toggle', async ({
+  test('a Claude voice note default-lands on the Voice segment with a player + listened toggle', async ({
     page,
   }) => {
     await page.addInitScript(
@@ -582,15 +610,13 @@ test.describe('cross-device sync (logged in)', () => {
     await page.goto('/');
 
     await page.locator('#open-log').click();
-    // Its own labelled section, an audio player, and an unheard accent.
-    await expect(
-      page.locator('.log-section-title', { hasText: 'Notes from Claude' })
-    ).toBeVisible();
+    // Default-lands on the Voice segment (it has the unheard note); the Voice tab is active.
+    await expect(page.locator('.seg[data-seg="voice"]')).toHaveClass(/is-active/);
     const card = page.locator('.claude-card');
     await expect(card).toHaveCount(1);
     await expect(card.locator('audio.claude-audio')).toHaveCount(1);
     await expect(card).toHaveClass(/is-unlistened/);
-    // Marking listened swaps the button for the badge and drops the accent.
+    // Marking listened swaps the button for the badge and dims the card (sunk + checked off).
     await card.locator('.mark-listened').click();
     await expect(card.locator('.listened-badge')).toBeVisible();
     await expect(page.locator('.claude-card.is-unlistened')).toHaveCount(0);
@@ -614,6 +640,223 @@ test.describe('offline (Supabase rejects)', () => {
     );
     expect(stored.length).toBe(1);
     expect(stored[0].synced).toBe(false);
+  });
+});
+
+test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
+  const SESSION_KEY = 'vc.session';
+
+  // One row per segment + her own note. The voice note is unheard → default-lands on Voice.
+  const SEGMENTED_REMOTE = [
+    {
+      id: 'mine1',
+      transcript: 'my own captured thought',
+      source: 'text',
+      created_at: new Date(Date.now() - 5_000).toISOString(),
+      from_claude: false,
+    },
+    {
+      id: 'voice1',
+      transcript: 'Voice note: your eval-day plan',
+      source: 'text',
+      created_at: new Date(Date.now() - 10_000).toISOString(),
+      from_claude: true,
+      audio_url:
+        'https://hpiyvnfhoqnnnotrmwaz.supabase.co/storage/v1/object/public/voice-notes/voice1.mp3',
+      listened: false,
+    },
+    {
+      id: 'info1',
+      transcript: 'מכונים list — Jerusalem eval options',
+      source: 'text',
+      created_at: new Date(Date.now() - 20_000).toISOString(),
+      from_claude: true,
+      audio_url: null,
+      listened: false,
+    },
+  ];
+
+  async function seedLoggedIn(
+    page: import('@playwright/test').Page,
+    remote: unknown[] = SEGMENTED_REMOTE
+  ): Promise<void> {
+    await page.addInitScript((sk: string) => {
+      window.localStorage.setItem(
+        sk,
+        JSON.stringify({
+          access_token: 'fake-access',
+          refresh_token: 'fake-refresh',
+          expires_at: Date.now() + 3_600_000,
+          email: 'allisonecalt@gmail.com',
+        })
+      );
+    }, SESSION_KEY);
+    await installMocks(page, FAKE_TRANSCRIPT, true, remote);
+    await page.goto('/');
+    await page.locator('#open-log').click();
+  }
+
+  test('the segmented control filters one inbox into Mine / Voice / Info', async ({ page }) => {
+    await seedLoggedIn(page);
+    // Three segments rendered.
+    await expect(page.locator('.seg')).toHaveCount(3);
+    // Default-lands on Voice (it has the unheard voice note); only voice1 shows.
+    await expect(page.locator('.seg[data-seg="voice"]')).toHaveClass(/is-active/);
+    await expect(page.locator('.log-text', { hasText: 'your eval-day plan' })).toBeVisible();
+    await expect(page.locator('.log-text', { hasText: 'מכונים list' })).toHaveCount(0);
+    await expect(page.locator('.log-text', { hasText: 'my own captured thought' })).toHaveCount(0);
+
+    // Switch to Info → only the written memo (no audio player).
+    await page.locator('.seg[data-seg="info"]').click();
+    await expect(page.locator('.log-text', { hasText: 'מכונים list' })).toBeVisible();
+    await expect(page.locator('audio.claude-audio')).toHaveCount(0);
+    await expect(page.locator('.log-text', { hasText: 'your eval-day plan' })).toHaveCount(0);
+
+    // Switch to My Notes → only her own capture.
+    await page.locator('.seg[data-seg="mine"]').click();
+    await expect(page.locator('.log-text', { hasText: 'my own captured thought' })).toBeVisible();
+    await expect(page.locator('.claude-card')).toHaveCount(0);
+  });
+
+  test('the Claude tabs show an unheard count + header; Mine shows a plain count', async ({
+    page,
+  }) => {
+    await seedLoggedIn(page);
+    // Voice + Info each carry a "1" unheard badge; Mine has none.
+    await expect(page.locator('.seg[data-seg="voice"] .seg-badge')).toHaveText('1');
+    await expect(page.locator('.seg[data-seg="info"] .seg-badge')).toHaveText('1');
+    await expect(page.locator('.seg[data-seg="mine"] .seg-badge')).toHaveCount(0);
+    // Voice (active) header states the unheard count, never scolds.
+    await expect(page.locator('.segment-header')).toHaveText('1 unheard');
+    // After marking it listened, the header flips to the calm "All caught up ✓".
+    await page.locator('.claude-card .mark-listened').click();
+    await expect(page.locator('.segment-header.is-clear')).toHaveText('All caught up ✓');
+  });
+
+  test('auto-mark on audio "ended" flips the note to listened', async ({ page }) => {
+    await seedLoggedIn(page);
+    const card = page.locator('.claude-card');
+    await expect(card).toHaveClass(/is-unlistened/);
+    // Fire the <audio> 'ended' event (full play-through) — the app auto-marks it.
+    await card.locator('audio.claude-audio').dispatchEvent('ended');
+    await expect(card.locator('.listened-badge')).toBeVisible();
+    await expect(card).toHaveClass(/is-listened/);
+    // It persisted via an authenticated PATCH carrying listened=true.
+    await expect
+      .poll(async () => (await patches(page)).some((p) => p.body?.listened === true))
+      .toBe(true);
+  });
+
+  test('archive soft-deletes with an Undo snackbar (no confirm dialog)', async ({ page }) => {
+    await seedLoggedIn(page);
+    const card = page.locator('.claude-card');
+    await card.locator('.log-archive[data-archive]').click();
+    // The card drops from view immediately; the Undo snackbar appears (no dialog).
+    await expect(page.locator('.claude-card')).toHaveCount(0);
+    await expect(page.locator('#undo-snackbar')).toBeVisible();
+    // It archived server-side via PATCH archived=true.
+    await expect
+      .poll(async () => (await patches(page)).some((p) => p.body?.archived === true))
+      .toBe(true);
+    // Undo restores it (PATCH archived=false) and the card comes back.
+    await page.locator('#undo-archive').click();
+    await expect
+      .poll(async () => (await patches(page)).some((p) => p.body?.archived === false))
+      .toBe(true);
+    await expect(page.locator('.claude-card')).toHaveCount(1);
+  });
+
+  test('Reply on a Claude note carries reply_to + reply_snippet into the capture', async ({
+    page,
+  }) => {
+    await seedLoggedIn(page);
+    // Tap Reply on the voice note → drops into compose with a "replying to" banner.
+    await page.locator('.claude-card .reply-btn').click();
+    await expect(page.locator('.screen-compose')).toBeVisible();
+    await expect(page.locator('.reply-banner')).toBeVisible();
+    // Type + send → the saved capture carries the parent id + snippet.
+    await page.locator('#draft').fill('yes, the second clinic works for me');
+    await page.locator('#compose-action').click();
+    await expect.poll(async () => (await posts(page)).length).toBe(1);
+    const [row] = await posts(page);
+    expect(row.transcript).toBe('yes, the second clinic works for me');
+    expect((row as { reply_to?: string }).reply_to).toBe('voice1');
+    expect((row as { reply_snippet?: string }).reply_snippet).toContain('your eval-day plan');
+    // The banner clears after sending.
+    await expect(page.locator('.reply-banner')).toHaveCount(0);
+  });
+
+  test('the speed button cycles 1× → 1.25× → 1.5× → 0.75× and remembers it', async ({ page }) => {
+    await seedLoggedIn(page);
+    const speed = page.locator('.speed-btn').first();
+    await expect(speed).toHaveText('1×');
+    await speed.click();
+    await expect(speed).toHaveText('1.25×');
+    await speed.click();
+    await expect(speed).toHaveText('1.5×');
+    await speed.click();
+    await expect(speed).toHaveText('0.75×');
+    await speed.click();
+    await expect(speed).toHaveText('1×');
+    // The audio element's playbackRate tracks the chip.
+    await speed.click(); // → 1.25×
+    const rate = await page
+      .locator('.claude-card audio.claude-audio')
+      .first()
+      .evaluate((a: HTMLAudioElement) => a.playbackRate);
+    expect(rate).toBeCloseTo(1.25, 2);
+    // Persisted to localStorage.
+    const stored = await page.evaluate(() => window.localStorage.getItem('vc.playbackRate'));
+    expect(stored).toBe('1.25');
+  });
+
+  test('her reply renders with a "↩ re: …" tag in My Notes', async ({ page }) => {
+    // A remote row that IS her reply (carries reply_snippet) shows the thread tag.
+    const withReply = [
+      {
+        id: 'myreply1',
+        transcript: 'sounds good, booking it',
+        source: 'voice',
+        created_at: new Date(Date.now() - 2_000).toISOString(),
+        from_claude: false,
+        reply_to: 'voice1',
+        reply_snippet: 'Voice note: your eval-day plan',
+      },
+    ];
+    await seedLoggedIn(page, withReply);
+    // Lands on Mine (no unheard Claude items). The reply tag is visible.
+    await expect(page.locator('.seg[data-seg="mine"]')).toHaveClass(/is-active/);
+    await expect(page.locator('.reply-tag')).toContainText('re: Voice note: your eval-day plan');
+  });
+
+  test('listened Claude notes dim + sink below unheard ones', async ({ page }) => {
+    const twoVoice = [
+      {
+        id: 'unheardV',
+        transcript: 'newer unheard voice note',
+        source: 'text',
+        created_at: new Date(Date.now() - 5_000).toISOString(),
+        from_claude: true,
+        audio_url: 'https://x/storage/v1/object/public/voice-notes/unheardV.mp3',
+        listened: false,
+      },
+      {
+        id: 'heardV',
+        transcript: 'older already-heard voice note',
+        source: 'text',
+        created_at: new Date(Date.now() - 50_000).toISOString(),
+        from_claude: true,
+        audio_url: 'https://x/storage/v1/object/public/voice-notes/heardV.mp3',
+        listened: true,
+      },
+    ];
+    await seedLoggedIn(page, twoVoice);
+    await expect(page.locator('.seg[data-seg="voice"]')).toHaveClass(/is-active/);
+    const cards = page.locator('.claude-card');
+    await expect(cards).toHaveCount(2);
+    // Unheard sorts first even though it isn't the very newest-by-rule; listened sinks + dims.
+    await expect(cards.nth(0)).toHaveClass(/is-unlistened/);
+    await expect(cards.nth(1)).toHaveClass(/is-listened/);
   });
 });
 

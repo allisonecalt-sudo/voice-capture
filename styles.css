@@ -618,21 +618,82 @@ body {
   pointer-events: auto;
 }
 
-/* ── Notes from Claude (Claude-pushed voice notes + written memos) ───────────── *
-   Her "easy access to 3 things": her own recordings live at the compose home; the Log groups
-   the two Claude kinds (🎧 voice / 📝 memo) above her own notes. Distinct but quiet — a thin
-   accent edge + ONE unheard dot (the single signal), listened = a calm success tick. No red,
-   no shame badge (anti-quit register). Accent (the app's one blue) is used only as a signal. */
-.log-section-title {
-  margin: var(--s5) var(--s1) var(--s2);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+/* ── Segmented control (the 3-view Log) ──────────────────────────────────────── *
+   Her proven ptab/htabs pattern: ONE inbox, three filtered views (🎤 Mine · 🎧 Voice · 📝 Info).
+   Active segment lifts with weight + shadow + the one accent — NOT a loud fill (anti-shame
+   register). A small unheard count rides on the Claude tabs; a count, never a red dot. */
+.segmented {
+  display: flex;
+  gap: var(--s1);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 3px;
+  margin: var(--s2) 0;
+}
+.seg {
+  flex: 1 1 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 38px;
+  padding: var(--s2) var(--s1);
+  border: none;
+  border-radius: 9px;
+  background: transparent;
   color: var(--text-2);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.14s ease,
+    color 0.14s ease,
+    box-shadow 0.14s ease;
 }
-.log-section-title:first-of-type {
-  margin-top: var(--s2);
+.seg-icon {
+  font-size: 14px;
+  line-height: 1;
 }
+.seg.is-active {
+  background: var(--surface-2);
+  color: var(--text-1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+.seg.is-active .seg-label {
+  color: var(--accent);
+}
+/* Unheard count on a Claude tab — a quiet accent pill, never a red badge. */
+.seg-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+/* Per-segment header: "N unheard" / "All caught up ✓" / "N notes". Counts stated, never scolded. */
+.segment-header {
+  margin: var(--s2) var(--s1) var(--s2);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  letter-spacing: 0.01em;
+}
+.segment-header.is-clear {
+  color: var(--success);
+}
+
+/* ── Notes from Claude (Claude-pushed voice notes + written memos) ───────────── *
+   Distinct but quiet — a thin accent edge + ONE unheard dot (the single signal); listened = a
+   calm success tick, the card dims + sinks to the bottom (checked off, not gone). No red, no
+   shame badge (anti-quit register). Accent (the app's one blue) is used only as a signal. */
 .claude-card {
   position: relative;
   border-left: 2px solid var(--accent);
@@ -650,6 +711,11 @@ body {
   border-radius: 50%;
   background: var(--accent);
 }
+/* Listened: dimmed + a muted edge (it has sunk to the bottom of its segment). */
+.claude-card.is-listened {
+  border-left-color: var(--border);
+  opacity: 0.62;
+}
 .claude-context {
   margin: 0 0 var(--s2);
   font-size: 12px;
@@ -657,10 +723,36 @@ body {
   color: var(--text-2);
   letter-spacing: 0.01em;
 }
+.claude-player {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: var(--s1) 0 var(--s2);
+}
 .claude-audio {
+  flex: 1 1 auto;
   width: 100%;
   height: 36px;
-  margin: var(--s1) 0 var(--s2);
+}
+/* Playback-speed cycle button (1× / 1.25× / 1.5× / 0.75×). Quiet chip, tabular so it doesn't jump
+   width as the label changes. Not the accent — it's a control, not the primary signal. */
+.speed-btn {
+  flex: 0 0 auto;
+  min-width: 48px;
+  height: 32px;
+  padding: 0 var(--s2);
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-2);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.speed-btn:active {
+  background: var(--surface-2);
 }
 .claude-card .log-meta {
   display: flex;
@@ -675,4 +767,94 @@ body {
 }
 .mark-listened {
   font-size: 13px;
+}
+.reply-btn {
+  font-size: 13px;
+  color: var(--accent);
+}
+
+/* ── Reply thread (her voice/text reply to a Claude note) ────────────────────── *
+   On HER reply card: a quiet "↩ re: …" tag above the text. In compose: a banner naming what
+   she's replying to, with a one-tap cancel. One level deep — a reply is never replied-to. */
+.reply-tag {
+  margin: 0 0 var(--s2);
+  font-size: 12px;
+  color: var(--text-3);
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.reply-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--r-card);
+  padding: var(--s2) var(--s3);
+  margin: var(--s2) 0;
+}
+.reply-banner-text {
+  flex: 1 1 auto;
+  font-size: 13px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.reply-cancel {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  font-size: 15px;
+  cursor: pointer;
+  padding: var(--s1);
+  line-height: 1;
+}
+
+/* ── Archive Undo snackbar ───────────────────────────────────────────────────── *
+   After a soft-archive: "Archived — Undo" for ~6s (no confirm dialog — Undo IS the safety).
+   One at a time, bottom of the Log, non-blocking. */
+.undo-snackbar {
+  position: fixed;
+  left: 50%;
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  background: var(--surface-2);
+  color: var(--text-1);
+  font-size: 14px;
+  padding: var(--s3) var(--s4);
+  border-radius: 12px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+  z-index: 12;
+  animation: undo-in 0.18s ease;
+}
+@keyframes undo-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+.undo-text {
+  color: var(--text-2);
+}
+.undo-btn {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
 }
