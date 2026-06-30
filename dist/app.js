@@ -24,8 +24,9 @@
 import { transcribeAudio } from './gemini.js';
 import { TARGET_SAMPLE_RATE, downsampleBuffer, mergeChunks, encodeWav, blobToBase64, } from './wav.js';
 import { addCapture, clearHistory, deleteCapture, loadHistory, pruneSyncedLocal, syncPending, } from './history.js';
-import { fetchRemoteCaptures, markListened } from './supabase.js';
+import { archiveCapture, fetchRemoteCaptures, markListened, unarchiveCapture, } from './supabase.js';
 import { currentEmail, getToken, isLoggedIn, login, logout } from './auth.js';
+import { isPushSupported, pushPermission, subscribeToPush } from './push.js';
 // ── Constants ───────────────────────────────────────────────────────────────
 const KEY_STORAGE = 'voice-capture.gemini-key';
 // Inline base64 ceiling. A 16 kHz mono 16-bit WAV is ~1.9 MB/min and Gemini's inline cap is
@@ -38,9 +39,22 @@ const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v14';
+const APP_VERSION = 'v15';
 // Last-edited date shown next to the version (e.g. "v9 · Jun 18, 2026"). Update with APP_VERSION.
 const BUILD_DATE = 'Jun 30, 2026';
+// Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
+// default is unchanged; remembered across sessions in localStorage so her choice sticks.
+const SPEED_STEPS = [1, 1.25, 1.5, 0.75];
+const SPEED_KEY = 'vc.playbackRate';
+// Set ONLY after a subscription row actually lands in Supabase — NOT on a bare permission grant.
+// "✓ Notifications on" reads off this, so a silent store failure can't latch a false "on" (it used
+// to, off Notification.permission alone, which hid the retry). Cleared if a later store fails.
+const PUSH_SUBSCRIBED_KEY = 'vc.pushSubscribed';
+// How long the "Archived — Undo" snackbar stays up before it commits (no confirm dialog — Undo IS
+// the safety, per her "archive nicely, pullable" rule). ~6s matches Material's undo window.
+const UNDO_WINDOW_MS = 6000;
+// The reply snippet length carried with a threaded reply (first ~120 chars of the parent note).
+const REPLY_SNIPPET_MAX = 120;
 const state = {
     screen: 'compose',
     draft: '',
@@ -52,6 +66,9 @@ const state = {
     needsKeyPrompt: false,
     paused: false,
     pendingVoice: null,
+    segment: null,
+    replyContext: null,
+    pendingUndo: null,
 };
 // ── Key storage (localStorage only, device-only) ─────────────────────────────
 function getKey() {
@@ -75,6 +92,58 @@ function setKey(value) {
 }
 function hasKey() {
     return getKey().length > 0;
+}
+// ── Playback speed (remembered, device-only) ─────────────────────────────────
+/** The remembered playback rate (defaults to 1×). Validated against SPEED_STEPS so a stray value
+ *  can never set an absurd rate. */
+function getSpeed() {
+    try {
+        const raw = Number(localStorage.getItem(SPEED_KEY));
+        if (SPEED_STEPS.includes(raw))
+            return raw;
+    }
+    catch {
+        // storage disabled — fall through to the default
+    }
+    return 1;
+}
+function setSpeed(rate) {
+    try {
+        localStorage.setItem(SPEED_KEY, String(rate));
+    }
+    catch {
+        // storage disabled — the rate just won't persist; this session still uses it.
+    }
+}
+/** True only if a subscription row was confirmed stored (set by the notify handler on real success).
+ *  Decoupled from Notification.permission so a granted-but-failed-store can't show a false "on". */
+function isPushSubscribed() {
+    try {
+        return localStorage.getItem(PUSH_SUBSCRIBED_KEY) === 'true';
+    }
+    catch {
+        return false;
+    }
+}
+function setPushSubscribed(on) {
+    try {
+        if (on)
+            localStorage.setItem(PUSH_SUBSCRIBED_KEY, 'true');
+        else
+            localStorage.removeItem(PUSH_SUBSCRIBED_KEY);
+    }
+    catch {
+        // storage disabled — the card just falls back to the default "Notify me" CTA.
+    }
+}
+/** The next rate in the cycle (wraps): 1× → 1.25× → 1.5× → 0.75× → 1× … */
+function nextSpeed(rate) {
+    const i = SPEED_STEPS.indexOf(rate);
+    return SPEED_STEPS[(i + 1) % SPEED_STEPS.length];
+}
+/** "1×" / "1.25×" label for the speed button. */
+function speedLabel(rate) {
+    return `${rate}×`;
 }
 // ── Audio recorder (Web Audio → PCM → 16 kHz mono WAV) ───────────────────────
 class AudioRecorder {
@@ -289,7 +358,7 @@ async function transcribeBlob(blob, mimeType, durationSeconds) {
             showToast('Nothing to save');
             return;
         }
-        addCapture(text, durationSeconds, 'voice'); // local-first, never lose it
+        addCapture(text, durationSeconds, 'voice', consumeReplyContext()); // local-first, never lose it
         state.pendingVoice = null; // succeeded — nothing left to retry
         state.screen = 'compose';
         render();
@@ -386,14 +455,27 @@ function normalizeAudioMime(rawType, filename) {
     }
 }
 // ── Compose actions (typed capture + voice entry) ─────────────────────────────
+/** Take the pending reply context (if she tapped Reply on a Claude note) and clear it, so the next
+ *  capture lands threaded exactly once. Returns undefined when this isn't a reply. */
+function consumeReplyContext() {
+    const rc = state.replyContext;
+    if (!rc)
+        return undefined;
+    state.replyContext = null;
+    return { replyTo: rc.replyTo, replySnippet: rc.replySnippet };
+}
 /** Fire the typed thought straight to the Claude inbox (no screen change — keep the keyboard up). */
 function sendComposed() {
     const text = state.draft.trim();
     if (!text)
         return;
-    addCapture(text, 0, 'text'); // local-first, never lose it
+    const reply = consumeReplyContext();
+    addCapture(text, 0, 'text', reply); // local-first, never lose it
     state.draft = '';
     state.needsKeyPrompt = false;
+    // A reply changes the composer chrome (the "replying to" banner) — re-render to clear it.
+    if (reply)
+        render();
     const ta = document.getElementById('draft');
     if (ta) {
         ta.value = '';
@@ -465,7 +547,9 @@ function clearLog() {
     showToast('Log cleared');
 }
 let remoteCache = null; // last successful inbox read (null = none yet)
-/** The list the Log renders: local-only when logged out / no inbox read yet, else inbox ∪ local. */
+/** The list the Log renders: local-only when logged out / no inbox read yet, else inbox ∪ local.
+ *  A row in its Undo window is held out so it stays hidden during the ~6s grace period (the row is
+ *  already gone from view; this keeps it gone even before the remote archive PATCH lands). */
 function buildLogRows() {
     const local = loadHistory();
     const localRows = (synced = true) => local.map((l) => ({
@@ -476,24 +560,34 @@ function buildLogRows() {
         source: l.source,
         remote: false,
         fromClaude: false,
+        replySnippet: l.replySnippet ?? null,
     }));
-    if (!isLoggedIn() || remoteCache === null)
-        return localRows();
-    const remoteRows = remoteCache.map((r) => ({
-        id: r.id,
-        transcript: r.transcript,
-        createdAt: r.created_at,
-        synced: true,
-        source: r.source,
-        remote: true,
-        fromClaude: r.from_claude === true,
-        audioUrl: r.audio_url ?? null,
-        listened: r.listened === true,
-    }));
-    // Only local notes the inbox doesn't already have (offline / not-yet-synced) ride alongside.
-    const remoteTexts = new Set(remoteCache.map((r) => r.transcript.trim()));
-    const localOnly = localRows().filter((l) => !remoteTexts.has(l.transcript.trim()));
-    return [...remoteRows, ...localOnly].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    let rows;
+    if (!isLoggedIn() || remoteCache === null) {
+        rows = localRows();
+    }
+    else {
+        const remoteRows = remoteCache.map((r) => ({
+            id: r.id,
+            transcript: r.transcript,
+            createdAt: r.created_at,
+            synced: true,
+            source: r.source,
+            remote: true,
+            fromClaude: r.from_claude === true,
+            audioUrl: r.audio_url ?? null,
+            listened: r.listened === true,
+            replySnippet: r.reply_snippet ?? null,
+        }));
+        // Only local notes the inbox doesn't already have (offline / not-yet-synced) ride alongside.
+        const remoteTexts = new Set(remoteCache.map((r) => r.transcript.trim()));
+        const localOnly = localRows().filter((l) => !remoteTexts.has(l.transcript.trim()));
+        rows = [...remoteRows, ...localOnly].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    }
+    // Hold out the row that's mid-Undo so it doesn't flicker back in before the PATCH commits.
+    if (state.pendingUndo)
+        rows = rows.filter((r) => r.id !== state.pendingUndo?.id);
+    return rows;
 }
 /** Pull the inbox in the background and re-render the Log when it lands. Silent on failure. */
 async function refreshRemoteLog() {
@@ -559,6 +653,12 @@ function renderCompose() {
     </header>
     <main class="screen screen-compose">
       ${errorBanner()}
+      ${state.replyContext
+        ? `<div class="reply-banner" role="status">
+        <span class="reply-banner-text" dir="auto">↩ Replying to: ${escapeHtml(truncate(state.replyContext.replySnippet, 80))}</span>
+        <button type="button" class="reply-cancel" id="cancel-reply" aria-label="Cancel reply">✕</button>
+      </div>`
+        : ''}
       ${state.pendingVoice
         ? `<div class="retry-prompt" role="status">
         <button type="button" class="btn btn-primary" id="retry-voice">↻ Retry transcription</button>
@@ -566,7 +666,9 @@ function renderCompose() {
       </div>`
         : ''}
       <div class="canvas">
-        <p class="canvas-hint">Say it or type it.<br />It's saved to your Claude inbox.</p>
+        <p class="canvas-hint">${state.replyContext
+        ? 'Reply by voice or text.<br />It threads back to that note.'
+        : "Say it or type it.<br />It's saved to your Claude inbox."}</p>
       </div>
       ${state.needsKeyPrompt
         ? `<div class="key-prompt" role="status">
@@ -616,8 +718,84 @@ function renderTranscribing() {
       <p class="muted-hint">Turning your voice into text.</p>
     </main>`;
 }
+// ── Segments (the 3-view Log) ─────────────────────────────────────────────────
+/** Which of the 3 segments a row belongs to: 🎤 Mine (her captures) · 🎧 Voice (Claude audio) ·
+ *  📝 Info (Claude written memos — the מכונים/כללית lists live here). */
+function segmentOf(it) {
+    if (!it.fromClaude)
+        return 'mine';
+    return it.audioUrl ? 'voice' : 'info';
+}
+/** Rows for one segment, with listened/checked items SUNK to the bottom (dim + done, not gone). */
+function rowsForSegment(items, seg) {
+    const inSeg = items.filter((it) => segmentOf(it) === seg);
+    const unheard = inSeg.filter((it) => isUnheard(it));
+    const heard = inSeg.filter((it) => !isUnheard(it));
+    return [...unheard, ...heard];
+}
+/** "Unheard" = a Claude note she hasn't listened to yet. Her own notes are never "unheard" (the
+ *  concept is about Claude reaching her), so Mine has no unheard count. */
+function isUnheard(it) {
+    return it.fromClaude === true && it.listened !== true;
+}
+/** Count of unheard items in a segment (drives the per-tab "N unheard" header + the tab badge). */
+function unheardCount(items, seg) {
+    return items.filter((it) => segmentOf(it) === seg && isUnheard(it)).length;
+}
+/** Pick the segment to land on: the first Claude segment that has unheard items, else Mine. So she
+ *  opens straight onto what's new from Claude, but never gets pulled away from her own list when
+ *  there's nothing new. (Order: Voice, then Info — voice notes are the more time-sensitive ask.) */
+function defaultSegment(items) {
+    if (unheardCount(items, 'voice') > 0)
+        return 'voice';
+    if (unheardCount(items, 'info') > 0)
+        return 'info';
+    return 'mine';
+}
+const SEGMENT_META = {
+    mine: { icon: '🎤', label: 'My Notes' },
+    voice: { icon: '🎧', label: 'Voice' },
+    info: { icon: '📝', label: 'Info' },
+};
+/** The top segmented control — her proven ptab/htabs pattern. Active = shadow/weight lift + the one
+ *  accent (NOT a loud fill); a small unheard count rides on the two Claude tabs (a count, never a
+ *  red dot). Views of ONE inbox — never a bottom tab bar. */
+function renderSegmentedControl(items, active) {
+    const seg = (s) => {
+        const meta = SEGMENT_META[s];
+        const n = s === 'mine' ? 0 : unheardCount(items, s);
+        const badge = n > 0 ? `<span class="seg-badge">${n}</span>` : '';
+        return `<button class="seg${s === active ? ' is-active' : ''}" data-seg="${s}"
+              role="tab" aria-selected="${s === active}">
+        <span class="seg-icon" aria-hidden="true">${meta.icon}</span><span class="seg-label">${meta.label}</span>${badge}
+      </button>`;
+    };
+    return `<div class="segmented" role="tablist">${seg('mine')}${seg('voice')}${seg('info')}</div>`;
+}
+/** The per-segment header: "N unheard" for the Claude tabs, "All caught up ✓" when zero. Mine just
+ *  shows a plain count of her notes. Counts stated, never scolded (anti-quit register). */
+function segmentHeader(items, seg) {
+    if (seg === 'mine') {
+        const n = items.filter((it) => segmentOf(it) === 'mine').length;
+        const label = n === 0 ? 'No notes yet' : `${n} note${n === 1 ? '' : 's'}`;
+        return `<p class="segment-header">${label}</p>`;
+    }
+    const n = unheardCount(items, seg);
+    const label = n === 0 ? 'All caught up ✓' : `${n} unheard`;
+    return `<p class="segment-header${n === 0 ? ' is-clear' : ''}">${label}</p>`;
+}
 function renderLog() {
     const items = buildLogRows();
+    // Resolve the active segment. Default-land happens ONCE per open: as soon as the data the Log
+    // lands on is available (the inbox read has landed, or we're logged out with only local notes),
+    // latch the chosen segment into state so later action re-renders (mark-listened, archive) don't
+    // jump the view away. Until then we show the computed default but DON'T latch (so the async
+    // inbox read can still re-home onto an unheard Claude tab when it arrives).
+    const dataReady = remoteCache !== null || !isLoggedIn();
+    const activeSegment = state.segment ?? defaultSegment(items);
+    if (state.segment === null && dataReady)
+        state.segment = activeSegment;
+    const segRows = rowsForSegment(items, activeSegment);
     const hasLocal = loadHistory().length > 0;
     const syncState = isLoggedIn()
         ? `<p class="log-sync" id="log-sync">✓ Synced — your notes from every device</p>`
@@ -628,25 +806,18 @@ function renderLog() {
            <button class="btn-text ${state.confirmingClear ? 'is-armed' : ''}" id="clear-all">${state.confirmingClear ? 'Tap again to clear all' : 'Clear all'}</button>
          </div>`
         : '';
-    const claudeRows = items.filter((i) => i.fromClaude);
-    const selfRows = items.filter((i) => !i.fromClaude);
-    const section = (title, rows) => rows.length
-        ? `<h2 class="log-section-title">${title}</h2><ul class="log-list">${rows
-            .map(renderLogCard)
-            .join('')}</ul>`
-        : '';
-    // When there are Claude notes, split into two labelled sections (Notes from Claude up top so the
-    // unheard ones lead); otherwise keep the plain single list — unchanged from before.
-    let list;
-    if (claudeRows.length) {
-        list = section('🤖 Notes from Claude', claudeRows) + section('🗣️ Note to Self', selfRows);
-    }
-    else if (items.length) {
-        list = `<ul class="log-list">${items.map(renderLogCard).join('')}</ul>`;
-    }
-    else {
-        list = `<p class="log-empty">Nothing captured yet.</p>`;
-    }
+    // The active segment renders as ONE list (unheard up top, listened dimmed + sunk below). Empty
+    // states are gentle + segment-specific (anti-quit register — never "you missed", just calm).
+    const emptyCopy = {
+        mine: 'Nothing captured yet.',
+        voice: 'No voice notes from Claude yet.',
+        info: 'No memos from Claude yet.',
+    };
+    const list = segRows.length
+        ? `<ul class="log-list">${segRows.map(renderLogCard).join('')}</ul>`
+        : `<p class="log-empty">${emptyCopy[activeSegment]}</p>`;
+    // Only "My Notes" can be cleared (her local buffer) — hide the tool on the Claude tabs.
+    const toolsForSegment = activeSegment === 'mine' ? tools : '';
     return `
     <header class="topbar">
       <button class="icon-btn" id="log-back" aria-label="Back" title="Back">←</button>
@@ -656,25 +827,43 @@ function renderLog() {
       </div>
     </header>
     <main class="screen screen-log">
+      ${renderSegmentedControl(items, activeSegment)}
       ${syncState}
-      ${tools}
+      ${segmentHeader(items, activeSegment)}
+      ${toolsForSegment}
       ${list}
+      ${renderUndoSnackbar()}
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
     </main>`;
+}
+/** The "Archived — Undo" snackbar (shown ~6s after an archive; tap Undo to restore). No confirm
+ *  dialog — Undo IS the safety. Rendered only while a row is in its grace window. */
+function renderUndoSnackbar() {
+    if (!state.pendingUndo)
+        return '';
+    return `<div class="undo-snackbar" id="undo-snackbar" role="status" aria-live="polite">
+      <span class="undo-text">Archived</span>
+      <button type="button" class="undo-btn" id="undo-archive">Undo</button>
+    </div>`;
 }
 function renderLogCard(it) {
     if (it.fromClaude)
         return renderClaudeCard(it);
     const icon = it.source === 'text' ? '✍️' : '🎤';
     const copied = state.copiedId === it.id;
-    // Remote rows are read-only (the inbox; Claude clears them after routing) — no delete button.
-    // Local-only notes that haven't reached the inbox yet still show "syncing" + a delete.
-    const del = it.remote
-        ? ''
-        : `<button class="icon-btn sm log-del" data-id="${it.id}" aria-label="Delete">🗑</button>`;
+    // Archive button on every card (her "delete" = soft-archive, pullable). Remote/synced rows archive
+    // server-side (authenticated PATCH); a local-only note that never reached the inbox is removed
+    // from the device buffer instead (nothing to archive yet) — both via the one 🗑 control.
+    const archiveAttr = it.remote ? 'data-archive' : 'data-local-del';
+    const del = `<button class="icon-btn sm log-archive" ${archiveAttr}="${escapeHtml(it.id)}" aria-label="Archive">🗑</button>`;
     const syncing = !it.remote && !it.synced ? ' · syncing' : '';
+    // If this is HER reply to a Claude note, tag it so the thread is visible at a glance.
+    const replyTag = it.replySnippet
+        ? `<p class="reply-tag" dir="auto">↩ re: ${escapeHtml(truncate(it.replySnippet, 80))}</p>`
+        : '';
     return `
     <li class="log-card">
+      ${replyTag}
       <p class="log-text" dir="auto">${escapeHtml(it.transcript)}</p>
       <div class="log-meta">
         <span class="log-time">${icon} ${relativeTime(it.createdAt)}${syncing}</span>
@@ -686,27 +875,43 @@ function renderLogCard(it) {
     </li>`;
 }
 /** A "Note from Claude": a short context line (what + when), the text, an optional voice-note
- *  player, and a listened state. Unheard notes carry an accent until she plays or marks them. */
+ *  player (with a speed control + reply button), a listened state, and an archive control. Unheard
+ *  notes carry the one accent until she plays or marks them; listened ones dim + sink. */
 function renderClaudeCard(it) {
     const copied = state.copiedId === it.id;
+    const speed = getSpeed();
+    // The audio player + its speed cycle button. The subject is spoken at the top of the audio
+    // (push-claude-note.py prepends the title), so playback always states which session it's from.
     const player = it.audioUrl
-        ? `<audio class="claude-audio" controls preload="none" data-id="${escapeHtml(it.id)}" src="${escapeHtml(it.audioUrl)}"></audio>`
+        ? `<div class="claude-player">
+         <audio class="claude-audio" controls preload="none" data-speed="${speed}" data-id="${escapeHtml(it.id)}" src="${escapeHtml(it.audioUrl)}"></audio>
+         <button type="button" class="speed-btn" data-id="${escapeHtml(it.id)}" aria-label="Playback speed">${speedLabel(speed)}</button>
+       </div>`
         : '';
     const listened = it.listened
         ? `<span class="listened-badge">✓ Listened</span>`
         : `<button class="btn-text mark-listened" data-id="${escapeHtml(it.id)}">Mark as listened</button>`;
+    // Reply (one level): records a voice/text note that lands threaded with reply_to + a snippet.
+    const reply = `<button class="btn-text reply-btn" data-id="${escapeHtml(it.id)}" data-snippet="${escapeHtml(truncate(it.transcript, REPLY_SNIPPET_MAX))}">🎙️ Reply</button>`;
     return `
-    <li class="log-card claude-card${it.listened ? '' : ' is-unlistened'}" data-card-id="${escapeHtml(it.id)}">
+    <li class="log-card claude-card${it.listened ? ' is-listened' : ' is-unlistened'}" data-card-id="${escapeHtml(it.id)}">
       <p class="claude-context">${it.audioUrl ? '🎧 Voice note' : '📝 Memo'} from Claude · ${escapeHtml(absoluteTime(it.createdAt))}</p>
       ${player}
       <p class="log-text" dir="auto">${escapeHtml(it.transcript)}</p>
       <div class="log-meta">
         ${listened}
         <span class="log-card-actions">
+          ${reply}
           <button class="icon-btn sm log-copy" data-id="${escapeHtml(it.id)}" aria-label="Copy">${copied ? 'Copied ✓' : '⧉'}</button>
+          <button class="icon-btn sm log-archive" data-archive="${escapeHtml(it.id)}" aria-label="Archive">🗑</button>
         </span>
       </div>
     </li>`;
+}
+/** First `n` characters, ellipsised. Used for the reply snippet + the "↩ re: …" tag. */
+function truncate(text, n) {
+    const t = text.trim();
+    return t.length <= n ? t : `${t.slice(0, n).trimEnd()}…`;
 }
 /** Absolute "Jun 30, 7:36 PM"-style stamp for a Claude note (her "what time" context line). */
 function absoluteTime(iso) {
@@ -771,7 +976,35 @@ function renderSettings() {
         <a class="settings-link" href="https://aistudio.google.com/app/apikey"
            target="_blank" rel="noopener">Get a free key →</a>
       </div>
+      ${renderNotifyCard()}
     </main>`;
+}
+/** The "🔔 Notify me" card (v15 push, STAGED). Gift-framed copy — a note from Claude arrives as a
+ *  welcome, never a nag. Hidden where Web Push isn't supported. The actual send needs the Edge
+ *  Function deployed (see PUSH-SETUP.md); the button only registers THIS device. */
+function renderNotifyCard() {
+    if (!isPushSupported())
+        return '';
+    const perm = pushPermission();
+    // "On" requires BOTH the OS permission AND a confirmed stored subscription — not permission alone.
+    // If permission was granted but the device row never landed (silent 401/network), we stay on the
+    // "🔔 Notify me" CTA so the retry is reachable instead of falsely claiming it's set up.
+    const subscribed = perm === 'granted' && isPushSubscribed();
+    const cta = subscribed
+        ? `<button class="btn btn-ghost" id="notify-btn" disabled>✓ Notifications on</button>`
+        : `<button class="btn btn-primary" id="notify-btn">🔔 Notify me</button>`;
+    return `
+      <div class="card">
+        <p class="settings-label">Notes from Claude</p>
+        <p class="settings-help">
+          Get a gentle heads-up when Claude leaves you a new note — no rush, no badges, just a
+          quiet “it’s waiting whenever you want it.”
+        </p>
+        <div class="settings-actions">
+          ${cta}
+        </div>
+        <p class="settings-status" id="notify-status"></p>
+      </div>`;
 }
 // ── Live DOM updates (no full re-render — keep focus/keyboard) ─────────────────
 function syncComposeAction() {
@@ -880,6 +1113,13 @@ function wireCompose() {
         void syncPending();
         state.copiedId = null;
         state.confirmingClear = false;
+        state.segment = null; // recompute default-land each fresh open (lands on unheard, else Mine)
+        // Invalidate the inbox cache too, so default-land does NOT latch off a STALE remoteCache before
+        // the fresh read lands. With remoteCache null, renderLog's dataReady is false on first paint (it
+        // shows the computed default but doesn't latch), letting refreshRemoteLog re-home onto a newly
+        // unheard Claude tab when the read arrives. (Matches handleLogin, which also nulls the cache.)
+        remoteCache = null;
+        state.pendingUndo = null;
         state.screen = 'log';
         render();
         void refreshRemoteLog(); // pull cross-device notes; re-renders the Log when they land
@@ -923,6 +1163,11 @@ function wireCompose() {
         state.screen = 'log';
         render();
     });
+    // Drop a reply she changed her mind about — back to a plain capture.
+    document.getElementById('cancel-reply')?.addEventListener('click', () => {
+        state.replyContext = null;
+        render();
+    });
 }
 function wireLog() {
     document.getElementById('log-back')?.addEventListener('click', () => {
@@ -941,6 +1186,19 @@ function wireLog() {
         render();
     });
     document.getElementById('clear-all')?.addEventListener('click', clearLog);
+    // Segmented control — switch which of the 3 views is showing (state.segment), then re-render.
+    document.querySelectorAll('.seg').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const seg = btn.dataset.seg;
+            if (!seg)
+                return;
+            state.segment = seg;
+            state.copiedId = null;
+            render();
+        });
+    });
+    // Undo an archive within the grace window — restore the row + dismiss the snackbar.
+    document.getElementById('undo-archive')?.addEventListener('click', () => void undoArchive());
     document.querySelectorAll('.log-copy').forEach((btn) => {
         btn.addEventListener('click', () => {
             const id = btn.dataset.id;
@@ -965,16 +1223,56 @@ function wireLog() {
             });
         });
     });
-    document.querySelectorAll('.log-del').forEach((btn) => {
+    // Archive (the visible 🗑 on every card). A REMOTE/synced row soft-archives (authenticated PATCH)
+    // with an Undo snackbar; a local-only note that never reached the inbox is just dropped from the
+    // device buffer (nothing to archive yet, no Undo needed).
+    document.querySelectorAll('.log-archive').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const remoteId = btn.dataset.archive;
+            const localId = btn.dataset.localDel;
+            if (remoteId) {
+                void archiveRow(remoteId);
+            }
+            else if (localId) {
+                deleteCapture(localId);
+                if (state.copiedId === localId)
+                    state.copiedId = null;
+                render();
+                showToast('Removed');
+            }
+        });
+    });
+    // Reply to a Claude note — stash the parent context and drop into compose to record/type.
+    document.querySelectorAll('.reply-btn').forEach((btn) => {
         btn.addEventListener('click', () => {
             const id = btn.dataset.id;
+            const snippet = btn.dataset.snippet ?? '';
             if (!id)
                 return;
-            deleteCapture(id);
-            if (state.copiedId === id)
-                state.copiedId = null;
+            state.replyContext = { replyTo: id, replySnippet: snippet };
+            state.screen = 'compose';
             render();
-            showToast('Deleted');
+        });
+    });
+    // Playback-speed cycle (1× → 1.25× → 1.5× → 0.75×). Applies live to THIS audio + remembers the
+    // choice; no full re-render (that would stop playback) — just relabel + set every player's rate.
+    document.querySelectorAll('.speed-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const rate = nextSpeed(getSpeed());
+            setSpeed(rate);
+            // Relabel EVERY speed chip, not just the tapped one — the rate is global (one remembered
+            // speed applied to all players), so a second card's chip must not keep showing a stale label
+            // while its audio actually plays at the changed rate.
+            const label = speedLabel(rate);
+            document
+                .querySelectorAll('.speed-btn')
+                .forEach((b) => (b.textContent = label));
+            // Apply to all currently-rendered players so the remembered rate is consistent on the screen.
+            document.querySelectorAll('audio.claude-audio').forEach((a) => {
+                a.playbackRate = rate;
+                a.dataset.speed = String(rate);
+            });
+            buzz();
         });
     });
     // Notes from Claude — "Mark as listened" → persist + re-render (swaps the button for the badge).
@@ -987,17 +1285,89 @@ function wireLog() {
             render();
         });
     });
-    // Playing the voice-note counts as hearing it — mark it the instant it starts, but WITHOUT a
-    // re-render (that would stop playback). Update just this card's badge in place.
+    // Each player starts at the remembered playback rate. Playing OR finishing counts as heard:
+    //  - 'play'  → mark the instant it starts (no re-render — that would stop playback).
+    //  - 'ended' → auto-mark on full play-through (her v15 ask), idempotent with 'play'.
     document.querySelectorAll('audio.claude-audio').forEach((audio) => {
+        const rate = Number(audio.dataset.speed) || getSpeed();
+        audio.playbackRate = rate;
         audio.addEventListener('play', () => {
+            const id = audio.dataset.id;
+            if (!id)
+                return;
+            // Re-assert the rate on play (some engines reset it before the first play).
+            audio.playbackRate = Number(audio.dataset.speed) || getSpeed();
+            void persistListened(id);
+            markListenedInDom(id);
+        }, { once: true });
+        audio.addEventListener('ended', () => {
             const id = audio.dataset.id;
             if (!id)
                 return;
             void persistListened(id);
             markListenedInDom(id);
-        }, { once: true });
+        });
     });
+}
+/** Soft-archive a remote/synced row: hide it immediately (optimistic), show the Undo snackbar, and
+ *  commit the authenticated PATCH after the grace window unless she undoes. */
+async function archiveRow(id) {
+    // Optimistically drop it from view + open the Undo window.
+    state.pendingUndo = { id, remote: true };
+    if (state.copiedId === id)
+        state.copiedId = null;
+    render();
+    buzz();
+    // Fire the PATCH right away (so it's archived server-side); Undo flips it back if she taps.
+    try {
+        const token = await getToken();
+        if (token)
+            await archiveCapture(token, id);
+        // Reflect in the local cache so a re-render after the window keeps it gone.
+        if (remoteCache)
+            remoteCache = remoteCache.filter((r) => r.id !== id);
+    }
+    catch (err) {
+        console.warn('[brain-dump] archive failed:', err);
+    }
+    scheduleUndoDismiss(id);
+}
+let undoTimer = null;
+/** Close the Undo window after ~6s — the archive is now committed; clear the snackbar. */
+function scheduleUndoDismiss(id) {
+    if (undoTimer !== null)
+        window.clearTimeout(undoTimer);
+    undoTimer = window.setTimeout(() => {
+        if (state.pendingUndo?.id === id) {
+            state.pendingUndo = null;
+            if (state.screen === 'log')
+                render();
+        }
+    }, UNDO_WINDOW_MS);
+}
+/** Undo a just-archived row: restore it (authenticated PATCH archived=false), re-read the inbox so
+ *  it reappears, and dismiss the snackbar. */
+async function undoArchive() {
+    const pending = state.pendingUndo;
+    if (!pending)
+        return;
+    if (undoTimer !== null) {
+        window.clearTimeout(undoTimer);
+        undoTimer = null;
+    }
+    state.pendingUndo = null;
+    render();
+    try {
+        const token = await getToken();
+        if (token) {
+            await unarchiveCapture(token, pending.id);
+            await refreshRemoteLog(); // pull it back into the list
+        }
+    }
+    catch (err) {
+        console.warn('[brain-dump] undo archive failed:', err);
+    }
+    showToast('Restored');
 }
 /** Flip a Claude note to listened: optimistic local-cache update + the authenticated PATCH.
  *  Never throws (offline just shows it again next read) — the UI has already moved on. */
@@ -1023,6 +1393,7 @@ function markListenedInDom(id) {
     if (!card)
         return;
     card.classList.remove('is-unlistened');
+    card.classList.add('is-listened'); // dim now; it sinks to the bottom on the next natural re-render
     const btn = card.querySelector('.mark-listened');
     if (btn) {
         const badge = document.createElement('span');
@@ -1066,6 +1437,37 @@ function wireSettings() {
         state.screen = 'settings';
         render();
         showToast('Logged out');
+    });
+    // "🔔 Notify me" (v15 push, STAGED) — a user gesture so the permission prompt is allowed. Asks,
+    // subscribes through the SW, and stores the subscription. Inert until the Edge Function is live;
+    // this only registers the device, so it can never affect the core capture flow.
+    document.getElementById('notify-btn')?.addEventListener('click', () => {
+        const statusEl = document.getElementById('notify-status');
+        const btn = document.getElementById('notify-btn');
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'Setting up…';
+        }
+        void subscribeToPush(currentEmail() || undefined).then((result) => {
+            if (result.ok) {
+                setPushSubscribed(true); // confirmed stored — only now does the card show "✓ Notifications on"
+                render();
+                showToast('Notifications on ✓');
+                return;
+            }
+            setPushSubscribed(false); // store failed — don't latch a false "on"; keep retry reachable
+            const msg = result.reason === 'denied'
+                ? 'Notifications are blocked — turn them on in your browser settings.'
+                : result.reason === 'unsupported'
+                    ? 'This browser can’t do notifications.'
+                    : 'Couldn’t set up notifications — try again.';
+            if (statusEl)
+                statusEl.textContent = msg;
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '🔔 Notify me';
+            }
+        });
     });
 }
 /** Sign in from Settings, warm the inbox, then jump to the Log so she SEES the synced notes. */

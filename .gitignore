@@ -5,3 +5,5 @@ playwright-report/
 .DS_Store
 *.log
 .env
+# VAPID PRIVATE key + push secrets — never commit (this repo is PUBLIC).
+supabase/.env.push-secrets

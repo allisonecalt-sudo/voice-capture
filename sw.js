@@ -13,7 +13,7 @@
 // BUILT:  install/activate/fetch with the two strategies above + handleShareTarget().
 // NEXT:   bump VERSION when shipping a new build.
 
-const VERSION = 'voice-capture-v14';
+const VERSION = 'voice-capture-v15';
 const SHELL_CACHE = `${VERSION}-shell`;
 
 // Web Share Target hand-off cache. When a voice note is shared INTO the app (Android:
@@ -33,6 +33,7 @@ const SHELL_ASSETS = [
   './dist/gemini.js',
   './dist/supabase.js',
   './dist/history.js',
+  './dist/push.js',
   './manifest.webmanifest',
   './icon.svg',
   './icon-192.png',
@@ -75,6 +76,50 @@ self.addEventListener('message', (event) => {
   }
 });
 
+// ── Web Push (v15, STAGED) ────────────────────────────────────────────────────
+// A "Note from Claude" arrives as a gift, never a nag (her anti-shame register): gentle copy,
+// no badge counter, no "UNREAD". The push payload is sent by the Supabase Edge Function
+// `send-push` (which holds the VAPID private key) on a from_claude row INSERT. The SW just shows
+// it. Both handlers are inert until she taps "Notify me" in the app and a subscription exists —
+// they never affect the core capture flow.
+self.addEventListener('push', (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    // Non-JSON / empty payload — fall back to the gentle default below.
+  }
+  const title = data.title || 'A new note from Claude';
+  const body = data.body || 'It’s waiting whenever you want it — no rush.';
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      icon: './icon-192.png',
+      badge: './icon-192.png',
+      // A quiet tag so repeated notes coalesce rather than stack into a guilt pile.
+      tag: data.tag || 'note-from-claude',
+      renotify: false,
+      data: { url: data.url || './index.html' },
+    })
+  );
+});
+
+// Tapping the notification opens (or focuses) the app — straight to her Log.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = (event.notification.data && event.notification.data.url) || './index.html';
+  const targetUrl = new URL(target, self.registration.scope).href;
+  event.waitUntil(
+    (async () => {
+      const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const client of all) {
+        if ('focus' in client) return client.focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
+    })()
+  );
+});
+
 function isShellRequest(url) {
   if (url.origin !== self.location.origin) return false;
   return url.pathname.startsWith(self.registration.scope.replace(self.location.origin, ''));
@@ -90,6 +135,7 @@ function isCodeRequest(url, request) {
     url.pathname.endsWith('/dist/gemini.js') ||
     url.pathname.endsWith('/dist/supabase.js') ||
     url.pathname.endsWith('/dist/history.js') ||
+    url.pathname.endsWith('/dist/push.js') ||
     url.pathname.endsWith('/index.html')
   );
 }

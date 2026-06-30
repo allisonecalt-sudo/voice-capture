@@ -17,7 +17,7 @@
 // BUILT:  HistoryItem type, load/save store, addCapture, deleteCapture, setCategory, syncPending.
 // NEXT:   none — stable. If history ever needs cross-device, that's an authed read surface.
 
-import { saveCapture, type Category, type CaptureSource } from './supabase.js';
+import { saveCapture, type Category, type CaptureSource, type ReplyContext } from './supabase.js';
 
 const HISTORY_KEY = 'vc.history';
 const MAX_ITEMS = 200;
@@ -30,6 +30,10 @@ export interface HistoryItem {
   synced: boolean;
   category?: Category; // routing tag: 'todo' | 'thought'; absent = unsorted
   source?: CaptureSource; // 'voice' (recorded+transcribed) | 'text' (typed); default 'voice'
+  // v15 threaded reply: when she replies to a "Note from Claude", these ride along IN the INSERT
+  // (anon has no PATCH) so an offline-queued reply still lands with its parent context.
+  replyTo?: string; // parent voice_captures row id
+  replySnippet?: string; // first ~120 chars of the parent (shown as "↩ re: …")
 }
 
 function newId(): string {
@@ -84,7 +88,8 @@ function isHistoryItem(value: unknown): value is HistoryItem {
 export function addCapture(
   transcript: string,
   durationSeconds?: number,
-  source: CaptureSource = 'voice'
+  source: CaptureSource = 'voice',
+  reply?: ReplyContext
 ): HistoryItem {
   const item: HistoryItem = {
     id: newId(),
@@ -94,6 +99,10 @@ export function addCapture(
     synced: false,
     source,
   };
+  if (reply && reply.replyTo) {
+    item.replyTo = reply.replyTo;
+    item.replySnippet = reply.replySnippet;
+  }
   const items = loadHistory();
   items.unshift(item);
   saveHistory(items);
@@ -150,7 +159,11 @@ export async function syncPending(): Promise<number> {
   for (const item of items) {
     if (item.synced) continue;
     try {
-      await saveCapture(item.transcript, item.durationSeconds, item.category, item.source);
+      const reply =
+        item.replyTo != null
+          ? { replyTo: item.replyTo, replySnippet: item.replySnippet ?? '' }
+          : undefined;
+      await saveCapture(item.transcript, item.durationSeconds, item.category, item.source, reply);
       item.synced = true;
       syncedCount++;
     } catch {
