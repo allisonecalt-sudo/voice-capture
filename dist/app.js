@@ -46,6 +46,10 @@ const BUILD_DATE = 'Jun 30, 2026';
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
 const SPEED_STEPS = [1, 1.25, 1.5, 0.75];
 const SPEED_KEY = 'vc.playbackRate';
+// Set ONLY after a subscription row actually lands in Supabase — NOT on a bare permission grant.
+// "✓ Notifications on" reads off this, so a silent store failure can't latch a false "on" (it used
+// to, off Notification.permission alone, which hid the retry). Cleared if a later store fails.
+const PUSH_SUBSCRIBED_KEY = 'vc.pushSubscribed';
 // How long the "Archived — Undo" snackbar stays up before it commits (no confirm dialog — Undo IS
 // the safety, per her "archive nicely, pullable" rule). ~6s matches Material's undo window.
 const UNDO_WINDOW_MS = 6000;
@@ -109,6 +113,27 @@ function setSpeed(rate) {
     }
     catch {
         // storage disabled — the rate just won't persist; this session still uses it.
+    }
+}
+/** True only if a subscription row was confirmed stored (set by the notify handler on real success).
+ *  Decoupled from Notification.permission so a granted-but-failed-store can't show a false "on". */
+function isPushSubscribed() {
+    try {
+        return localStorage.getItem(PUSH_SUBSCRIBED_KEY) === 'true';
+    }
+    catch {
+        return false;
+    }
+}
+function setPushSubscribed(on) {
+    try {
+        if (on)
+            localStorage.setItem(PUSH_SUBSCRIBED_KEY, 'true');
+        else
+            localStorage.removeItem(PUSH_SUBSCRIBED_KEY);
+    }
+    catch {
+        // storage disabled — the card just falls back to the default "Notify me" CTA.
     }
 }
 /** The next rate in the cycle (wraps): 1× → 1.25× → 1.5× → 0.75× → 1× … */
@@ -961,7 +986,10 @@ function renderNotifyCard() {
     if (!isPushSupported())
         return '';
     const perm = pushPermission();
-    const subscribed = perm === 'granted';
+    // "On" requires BOTH the OS permission AND a confirmed stored subscription — not permission alone.
+    // If permission was granted but the device row never landed (silent 401/network), we stay on the
+    // "🔔 Notify me" CTA so the retry is reachable instead of falsely claiming it's set up.
+    const subscribed = perm === 'granted' && isPushSubscribed();
     const cta = subscribed
         ? `<button class="btn btn-ghost" id="notify-btn" disabled>✓ Notifications on</button>`
         : `<button class="btn btn-primary" id="notify-btn">🔔 Notify me</button>`;
@@ -1086,6 +1114,11 @@ function wireCompose() {
         state.copiedId = null;
         state.confirmingClear = false;
         state.segment = null; // recompute default-land each fresh open (lands on unheard, else Mine)
+        // Invalidate the inbox cache too, so default-land does NOT latch off a STALE remoteCache before
+        // the fresh read lands. With remoteCache null, renderLog's dataReady is false on first paint (it
+        // shows the computed default but doesn't latch), letting refreshRemoteLog re-home onto a newly
+        // unheard Claude tab when the read arrives. (Matches handleLogin, which also nulls the cache.)
+        remoteCache = null;
         state.pendingUndo = null;
         state.screen = 'log';
         render();
@@ -1227,7 +1260,13 @@ function wireLog() {
         btn.addEventListener('click', () => {
             const rate = nextSpeed(getSpeed());
             setSpeed(rate);
-            btn.textContent = speedLabel(rate);
+            // Relabel EVERY speed chip, not just the tapped one — the rate is global (one remembered
+            // speed applied to all players), so a second card's chip must not keep showing a stale label
+            // while its audio actually plays at the changed rate.
+            const label = speedLabel(rate);
+            document
+                .querySelectorAll('.speed-btn')
+                .forEach((b) => (b.textContent = label));
             // Apply to all currently-rendered players so the remembered rate is consistent on the screen.
             document.querySelectorAll('audio.claude-audio').forEach((a) => {
                 a.playbackRate = rate;
@@ -1411,10 +1450,12 @@ function wireSettings() {
         }
         void subscribeToPush(currentEmail() || undefined).then((result) => {
             if (result.ok) {
+                setPushSubscribed(true); // confirmed stored — only now does the card show "✓ Notifications on"
                 render();
                 showToast('Notifications on ✓');
                 return;
             }
+            setPushSubscribed(false); // store failed — don't latch a false "on"; keep retry reachable
             const msg = result.reason === 'denied'
                 ? 'Notifications are blocked — turn them on in your browser settings.'
                 : result.reason === 'unsupported'

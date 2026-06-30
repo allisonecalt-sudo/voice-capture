@@ -40,13 +40,23 @@ supabase functions deploy send-push --project-ref hpiyvnfhoqnnnotrmwaz
 The values are in `supabase/.env.push-secrets` (gitignored). Set them on the project:
 
 ```bash
+# Generate a long random webhook secret first (the function fails closed without it):
+WEBHOOK_SECRET=$(openssl rand -hex 32)
+echo "$WEBHOOK_SECRET"   # save this — you paste it into the webhook header in Step 3
+
 supabase secrets set --project-ref hpiyvnfhoqnnnotrmwaz \
   VAPID_PUBLIC_KEY=<from supabase/.env.push-secrets> \
   VAPID_PRIVATE_KEY=<from supabase/.env.push-secrets> \
-  VAPID_SUBJECT=mailto:allisonecalt@gmail.com
+  VAPID_SUBJECT=mailto:allisonecalt@gmail.com \
+  PUSH_WEBHOOK_SECRET="$WEBHOOK_SECRET"
 ```
 
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are injected automatically — don't set those.
+
+`PUSH_WEBHOOK_SECRET` authenticates the webhook: the function is a public URL, so it rejects (401)
+any request that doesn't carry the matching `x-webhook-secret` header — a random POST to the function
+URL can't fire pushes. `supabase/config.toml` pins `verify_jwt = false` for the function (a DB
+Webhook doesn't send a user JWT — the shared secret is the auth).
 
 ## Step 3 — wire the Database Webhook (fires the function on a new Claude note)
 
@@ -56,6 +66,8 @@ In the Supabase dashboard → **Database → Webhooks → Create a new hook**:
 - **Events:** `INSERT` only
 - **Type:** Supabase Edge Function → `send-push`
 - **Method:** `POST`
+- **HTTP Headers:** add `x-webhook-secret` = the `WEBHOOK_SECRET` you generated in Step 2. Without a
+  matching header the function returns 401 and sends nothing (it fails closed).
 
 (The function itself re-checks `from_claude === true`, so even if the webhook fires on every insert,
 only Claude notes notify — her own captures never buzz her phone.)

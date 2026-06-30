@@ -79,17 +79,27 @@ export async function subscribeToPush(
         applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
       }));
 
-    await storeSubscription(sub, userEmail);
-    return { ok: true };
+    const stored = await storeSubscription(sub, userEmail);
+    // If the row didn't actually land, the device is NOT subscribed — report that honestly so the
+    // UI never shows "✓ Notifications on" off a permission grant alone (a silent store failure used
+    // to falsely latch the success state). 'error' lets the user retry.
+    return stored ? { ok: true } : { ok: false, reason: 'error' };
   } catch (err) {
     console.warn('[push] subscribe failed:', err);
     return { ok: false, reason: 'error' };
   }
 }
 
-/** Upsert the subscription into Supabase (anon INSERT; endpoint is UNIQUE so re-subscribing the
- *  same device is idempotent via `Prefer: resolution=merge-duplicates`). */
-async function storeSubscription(sub: PushSubscription, userEmail?: string): Promise<void> {
+/** Store the subscription into Supabase (anon INSERT, insert-only — same posture as voice_captures).
+ *  Returns true when the device is registered, false when the store failed (so the caller can report
+ *  the truth instead of a permission-only optimistic "on").
+ *
+ *  NOTE: this is a PLAIN insert, NOT an upsert. The old `Prefer: resolution=merge-duplicates` path
+ *  compiled to `ON CONFLICT DO UPDATE`, which PostgREST gates behind an anon UPDATE RLS policy the
+ *  table deliberately doesn't have (anon is insert-only) — so every subscribe 401'd and no device
+ *  was ever stored. `endpoint` is UNIQUE, so re-subscribing the same device returns HTTP 409; that
+ *  means "already registered" → treat it as success (idempotent without needing an UPDATE policy). */
+async function storeSubscription(sub: PushSubscription, userEmail?: string): Promise<boolean> {
   const body = {
     endpoint: sub.endpoint,
     p256dh: keyToBase64(sub, 'p256dh'),
@@ -102,11 +112,13 @@ async function storeSubscription(sub: PushSubscription, userEmail?: string): Pro
       apikey: SUPABASE_ANON_KEY,
       Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
       'Content-Type': 'application/json',
-      Prefer: 'return=minimal,resolution=merge-duplicates',
+      Prefer: 'return=minimal',
     },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    throw new Error(`push subscription store failed: HTTP ${res.status}`);
-  }
+  // 2xx = inserted; 409 = this device's endpoint is already on file (UNIQUE conflict) = already
+  // subscribed. Both mean "registered". Anything else (401/403/5xx) is a real failure.
+  if (res.ok || res.status === 409) return true;
+  console.warn(`[push] subscription store failed: HTTP ${res.status}`);
+  return false;
 }

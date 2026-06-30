@@ -13,6 +13,9 @@
 //   VAPID_PUBLIC_KEY   — the public key shipped in push.ts (kept here too for the webpush lib)
 //   VAPID_PRIVATE_KEY  — the PRIVATE half (secret; generated alongside the public key)
 //   VAPID_SUBJECT      — a mailto: or https: contact (e.g. mailto:allisonecalt@gmail.com)
+//   PUSH_WEBHOOK_SECRET — a long random string; the DB Webhook must send it as the
+//                         `x-webhook-secret` header. The function FAILS CLOSED (401) without it, so a
+//                         random POST to the public function URL can't fire pushes to every device.
 //   SUPABASE_URL       — auto-injected by the platform
 //   SUPABASE_SERVICE_ROLE_KEY — auto-injected; used to read push_subscriptions
 //
@@ -50,7 +53,30 @@ const json = (body: unknown, status = 200): Response =>
     headers: { 'Content-Type': 'application/json' },
   });
 
+/** Constant-time string compare — avoids leaking the secret via response-timing. Length-mismatch
+ *  still folds into the constant-time loop (compared against itself) so it never early-returns. */
+function timingSafeEqual(a: string, b: string): boolean {
+  const enc = new TextEncoder();
+  const ab = enc.encode(a);
+  const bb = enc.encode(b);
+  const len = Math.max(ab.length, bb.length);
+  let diff = ab.length ^ bb.length;
+  for (let i = 0; i < len; i++) diff |= (ab[i] ?? 0) ^ (bb[i] ?? 0);
+  return diff === 0;
+}
+
 Deno.serve(async (req: Request): Promise<Response> => {
+  // Webhook authentication: a public Edge Function URL is callable by anyone, so without a check a
+  // direct POST could fire pushes to every subscriber. Require a shared secret that ONLY the DB
+  // Webhook knows (set it as a custom header on the hook; store it as the PUSH_WEBHOOK_SECRET
+  // secret). Compared in constant time. If the secret isn't configured we FAIL CLOSED (401) rather
+  // than silently trust the body — push is staged, so a missing secret means "not wired yet".
+  const expected = Deno.env.get('PUSH_WEBHOOK_SECRET');
+  const provided = req.headers.get('x-webhook-secret') ?? req.headers.get('X-Webhook-Secret') ?? '';
+  if (!expected || !timingSafeEqual(expected, provided)) {
+    return json({ error: 'unauthorized' }, 401);
+  }
+
   let payload: WebhookPayload;
   try {
     payload = (await req.json()) as WebhookPayload;

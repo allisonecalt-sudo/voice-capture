@@ -1,0 +1,9 @@
+# Supabase project config (v15 push). Pins the send-push Edge Function's auth posture so it isn't
+# left to the platform default. The function does its OWN auth (a PUSH_WEBHOOK_SECRET shared-secret
+# header from the Database Webhook), so platform JWT verification is disabled for it — a DB Webhook
+# doesn't send a user JWT. The function fails closed (401) when the secret is absent or wrong.
+
+project_id = "hpiyvnfhoqnnnotrmwaz"
+
+[functions.send-push]
+verify_jwt = false

@@ -91,6 +91,9 @@ async function installMocks(
 
       (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts = [];
       (window as unknown as { __supabasePatches: unknown[] }).__supabasePatches = [];
+      // Mutable inbox: the GET handler reads from this so a test can change what the inbox returns
+      // between two Log opens (proves the fresh read re-homes the default segment — v15 re-home fix).
+      (window as unknown as { __remoteRows: unknown[] }).__remoteRows = remote;
 
       const realFetch = window.fetch.bind(window);
       window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -129,8 +132,10 @@ async function installMocks(
           const method = (init?.method ?? 'GET').toUpperCase();
           if (method === 'GET') {
             // Authenticated inbox read-back (cross-device history). The app appends
-            // `archived=eq.false`; the canned rows already exclude archived ones.
-            return new Response(JSON.stringify(remote), {
+            // `archived=eq.false`; the canned rows already exclude archived ones. Reads from the
+            // mutable __remoteRows so a test can simulate a newly-arrived note between opens.
+            const rows = (window as unknown as { __remoteRows: unknown[] }).__remoteRows ?? remote;
+            return new Response(JSON.stringify(rows), {
               status: 200,
               headers: { 'Content-Type': 'application/json' },
             });
@@ -733,6 +738,52 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
     await expect(page.locator('.segment-header.is-clear')).toHaveText('All caught up ✓');
   });
 
+  test('a newly-arrived unheard Claude note re-homes the default segment on the next open', async ({
+    page,
+  }) => {
+    // First open with ONLY her own note in the inbox → default-lands on Mine (no unheard Claude tab).
+    await seedLoggedIn(page, [
+      {
+        id: 'mine1',
+        transcript: 'my own captured thought',
+        source: 'text',
+        created_at: new Date(Date.now() - 5_000).toISOString(),
+        from_claude: false,
+      },
+    ]);
+    await expect(page.locator('.seg[data-seg="mine"]')).toHaveClass(/is-active/);
+
+    // A new unheard VOICE note from Claude lands in the inbox after the first open.
+    await page.evaluate(() => {
+      (window as unknown as { __remoteRows: unknown[] }).__remoteRows = [
+        {
+          id: 'mine1',
+          transcript: 'my own captured thought',
+          source: 'text',
+          created_at: new Date(Date.now() - 5_000).toISOString(),
+          from_claude: false,
+        },
+        {
+          id: 'voiceNew',
+          transcript: 'Voice note: just arrived',
+          source: 'text',
+          created_at: new Date().toISOString(),
+          from_claude: true,
+          audio_url:
+            'https://hpiyvnfhoqnnnotrmwaz.supabase.co/storage/v1/object/public/voice-notes/voiceNew.mp3',
+          listened: false,
+        },
+      ];
+    });
+
+    // Go back to compose, then open the Log again. The fresh inbox read must re-home onto Voice —
+    // it must NOT latch off the stale cache and stay on Mine (the v15 re-home regression).
+    await page.locator('#log-back').click();
+    await page.locator('#open-log').click();
+    await expect(page.locator('.seg[data-seg="voice"]')).toHaveClass(/is-active/);
+    await expect(page.locator('.log-text', { hasText: 'just arrived' })).toBeVisible();
+  });
+
   test('auto-mark on audio "ended" flips the note to listened', async ({ page }) => {
     await seedLoggedIn(page);
     const card = page.locator('.claude-card');
@@ -808,6 +859,41 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
     // Persisted to localStorage.
     const stored = await page.evaluate(() => window.localStorage.getItem('vc.playbackRate'));
     expect(stored).toBe('1.25');
+  });
+
+  test('changing speed relabels EVERY voice chip, not just the tapped one', async ({ page }) => {
+    // Two unheard voice notes → two speed chips. The rate is global, so tapping ONE chip must
+    // relabel BOTH (a second chip must not keep showing a stale "1×" while audio plays at 0.75×).
+    await seedLoggedIn(page, [
+      {
+        id: 'v1',
+        transcript: 'Voice note one',
+        source: 'text',
+        created_at: new Date(Date.now() - 5_000).toISOString(),
+        from_claude: true,
+        audio_url:
+          'https://hpiyvnfhoqnnnotrmwaz.supabase.co/storage/v1/object/public/voice-notes/v1.mp3',
+        listened: false,
+      },
+      {
+        id: 'v2',
+        transcript: 'Voice note two',
+        source: 'text',
+        created_at: new Date(Date.now() - 10_000).toISOString(),
+        from_claude: true,
+        audio_url:
+          'https://hpiyvnfhoqnnnotrmwaz.supabase.co/storage/v1/object/public/voice-notes/v2.mp3',
+        listened: false,
+      },
+    ]);
+    const chips = page.locator('.speed-btn');
+    await expect(chips).toHaveCount(2);
+    await expect(chips.nth(0)).toHaveText('1×');
+    await expect(chips.nth(1)).toHaveText('1×');
+    // Tap only the FIRST chip → BOTH must update to 1.25×.
+    await chips.nth(0).click();
+    await expect(chips.nth(0)).toHaveText('1.25×');
+    await expect(chips.nth(1)).toHaveText('1.25×');
   });
 
   test('her reply renders with a "↩ re: …" tag in My Notes', async ({ page }) => {
