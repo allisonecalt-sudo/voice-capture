@@ -39,10 +39,10 @@ const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v27';
+const APP_VERSION = 'v28';
 // Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
 // rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
-const BUILD_DATE = 'Jul 1, 2026 · 1:09pm JDT';
+const BUILD_DATE = 'Jul 1, 2026 · 1:50pm JDT';
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
 const SPEED_STEPS = [1, 1.25, 1.5, 2, 0.75];
@@ -599,6 +599,7 @@ function buildLogRows() {
             audioUrl: r.audio_url ?? null,
             listened: r.listened === true,
             replySnippet: r.reply_snippet ?? null,
+            seenBy: r.processed_at ? (r.processed_by ?? 'Claude') : null,
         }));
         // Only local notes the inbox doesn't already have (offline / not-yet-synced) ride alongside.
         const remoteTexts = new Set(remoteCache.map((r) => r.transcript.trim()));
@@ -768,7 +769,11 @@ function renderTranscribing() {
 function segmentOf(it) {
     if (!it.fromClaude)
         return it.source === 'whatsapp' ? 'shared' : 'mine';
-    return it.audioUrl ? 'voice' : 'info';
+    // A Claude note is a VOICE note by default — audio, OR born-as-voice (source='claude', audio still
+    // uploading). It lands in Voice from the moment it arrives, so it never flickers through Info while
+    // the audio uploads ("it's in the wrong place / it moved and I don't know why"). Only an explicit
+    // text memo (source!='claude', no audio) → Info.
+    return it.audioUrl || it.source === 'claude' ? 'voice' : 'info';
 }
 /** Rows for one segment, in STABLE newest-first order (as built). Listened items are NOT reordered —
  *  they dim in place (via the is-listened class) so a note never jumps or "disappears" the moment she
@@ -1005,10 +1010,18 @@ function renderLogCard(it) {
     const replyTag = it.replySnippet
         ? `<p class="reply-tag" dir="auto">↩ re: ${escapeHtml(truncate(it.replySnippet, 80))}</p>`
         : '';
+    // Read receipt: once a session has SEEN her reply, show "✓ Claude saw it — <session>" so she knows
+    // it landed AND which session picked it up. Only on her replies (they carry a snippet).
+    const seenTag = it.replySnippet
+        ? it.seenBy
+            ? `<p class="seen-tag is-seen">✓ Claude saw it — ${escapeHtml(it.seenBy)}</p>`
+            : `<p class="seen-tag">◦ Sent — waiting for a session to see it</p>`
+        : '';
     return `
     <li class="log-card">
       ${replyTag}
       <p class="log-text" dir="auto">${escapeHtml(it.transcript)}</p>
+      ${seenTag}
       <div class="log-meta">
         <span class="log-time">${icon} ${relativeTime(it.createdAt)}${syncing}</span>
         <span class="log-card-actions">

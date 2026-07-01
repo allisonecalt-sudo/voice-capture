@@ -126,6 +126,10 @@ export interface RemoteCapture {
   // friendly header the app groups by ("Voice-capture build"). Lets her filter/organize by session.
   session_id?: string | null;
   session_label?: string | null;
+  // v28: read-receipt — when a session has SEEN/processed her reply, `processed_by` is the session's
+  // label (and processed_at the time). The app shows "✓ Seen by <session>" on her reply card.
+  processed_at?: string | null;
+  processed_by?: string | null;
   from_claude?: boolean;
   audio_url?: string | null;
   listened?: boolean;
