@@ -795,15 +795,17 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
     await expect(page.locator('.claude-card', { hasText: 'just arrived' })).toBeVisible();
   });
 
-  test('playing a Claude note in the persistent bar marks it listened', async ({ page }) => {
+  test('FINISHING a Claude note marks it listened — starting it does not', async ({ page }) => {
     await seedLoggedIn(page);
     const card = page.locator('.claude-card');
     await expect(card).toHaveClass(/is-unlistened/);
-    // Tap ▶ Play → the note loads in the persistent bar; playing counts as heard (auto-marks).
+    // Start playing — must NOT mark it listened (she might leave before finishing).
     await card.locator('.card-play').click();
+    await expect(card).toHaveClass(/is-unlistened/);
+    // Finish (audio 'ended') — NOW it marks listened + persists.
+    await page.locator('#player-audio').dispatchEvent('ended');
     await expect(card.locator('.listened-badge')).toBeVisible();
     await expect(card).toHaveClass(/is-listened/);
-    // It persisted via an authenticated PATCH carrying listened=true.
     await expect
       .poll(async () => (await patches(page)).some((p) => p.body?.listened === true))
       .toBe(true);

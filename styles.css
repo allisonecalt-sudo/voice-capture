@@ -812,6 +812,10 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: pointer; /* tap the TITLE to jump to the note (not the controls) */
+  text-decoration: underline;
+  text-decoration-color: var(--text-3, var(--text-2));
+  text-underline-offset: 3px;
 }
 /* The controls row: [⏪10] [scrubber] [10⏩] — the scrubber flexes to fill, skips flank it. */
 .player-controls {

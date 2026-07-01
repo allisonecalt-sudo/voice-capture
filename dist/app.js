@@ -39,10 +39,10 @@ const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v24';
+const APP_VERSION = 'v25';
 // Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
 // rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
-const BUILD_DATE = 'Jul 1, 2026 · 12:18pm JDT';
+const BUILD_DATE = 'Jul 1, 2026 · 12:36pm JDT';
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
 const SPEED_STEPS = [1, 1.25, 1.5, 2, 0.75];
@@ -1844,9 +1844,26 @@ function playNote(id, url, subject) {
     void audio.play().catch(() => {
         /* a gesture/autoplay hiccup — the native controls in the bar still work */
     });
-    void persistListened(id);
-    markListenedInDom(id);
+    setMediaSession(subject);
+    // Playing no longer marks it listened — only FINISHING does (the 'ended' handler). Her bug: "I
+    // listen for 5 seconds, I leave, and it's already marked listened — I didn't even finish it."
     updatePlayButtonsInDom();
+}
+/** Wire OS media controls (lock screen + notification) so a voice note plays like a music app — her
+ *  ask: "can a voice play like YouTube Music, plays over everything." Metadata per note; the audio
+ *  element itself already keeps playing in the background on Android Chrome. */
+function setMediaSession(subject) {
+    if (!('mediaSession' in navigator))
+        return;
+    try {
+        navigator.mediaSession.metadata = new MediaMetadata({
+            title: subject || 'Note from Claude',
+            artist: 'Note from Claude',
+        });
+    }
+    catch {
+        /* MediaMetadata unavailable — the audio still plays */
+    }
 }
 /** Reflect which card is playing (▶ Playing) on the visible cards, without a full re-render. */
 function updatePlayButtonsInDom() {
@@ -1885,6 +1902,30 @@ function wirePlayerBar() {
     if (!audio)
         return; // bar absent (e.g. a test harness without the shell) — no-op
     playerWired = true;
+    // OS media controls (lock screen + notification): play/pause + ±10s, so a voice note behaves like
+    // a music app and can be controlled without opening the app. Wired once.
+    if ('mediaSession' in navigator) {
+        const ms = navigator.mediaSession;
+        ms.setActionHandler('play', () => void audio.play());
+        ms.setActionHandler('pause', () => audio.pause());
+        ms.setActionHandler('seekbackward', () => {
+            audio.currentTime = Math.max(0, audio.currentTime - 10);
+        });
+        ms.setActionHandler('seekforward', () => {
+            const end = audio.duration || audio.currentTime + 10;
+            audio.currentTime = Math.min(end, audio.currentTime + 10);
+        });
+    }
+    // Tap the now-playing subject → jump to that note in the Log (YouTube-Music-style: the mini-player
+    // takes you to the track). Her ask: "if I click on the audio strip it takes me to the voice note."
+    document.getElementById('player-subject')?.addEventListener('click', () => {
+        if (!currentNoteId)
+            return;
+        state.pendingOpenNote = currentNoteId;
+        state.screen = 'log';
+        render();
+        tryOpenPendingNote();
+    });
     // Re-assert the remembered speed whenever the media (re)loads or starts. Browsers reset
     // playbackRate to 1 when a new src loads, which was silently wiping her speed choice ("I can't
     // control the speed"). Applying it on loadedmetadata + play makes the speed actually stick.
