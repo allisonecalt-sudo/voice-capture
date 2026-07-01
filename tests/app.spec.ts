@@ -976,6 +976,43 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
     await expect(c2.locator('.claude-subject')).toHaveText('Subject from first line');
     await expect(c2.locator('.log-text')).toHaveText('and the body below');
   });
+
+  test('Voice tab groups by session + a dropdown filters to one session', async ({ page }) => {
+    await seedLoggedIn(page, [
+      {
+        id: 's1a',
+        title: 'Build note',
+        transcript: 'about the build',
+        source: 'text',
+        created_at: new Date(Date.now() - 5_000).toISOString(),
+        from_claude: true,
+        audio_url: 'https://x/storage/v1/object/public/voice-notes/s1a.mp3',
+        listened: false,
+        session_label: 'Voice-capture build',
+      },
+      {
+        id: 's2a',
+        title: 'Masters note',
+        transcript: 'about masters',
+        source: 'text',
+        created_at: new Date(Date.now() - 9_000).toISOString(),
+        from_claude: true,
+        audio_url: 'https://x/storage/v1/object/public/voice-notes/s2a.mp3',
+        listened: false,
+        session_label: 'Masters decision',
+      },
+    ]);
+    await expect(page.locator('.seg[data-seg="voice"]')).toHaveClass(/is-active/);
+    // With 2 sessions the dropdown appears and the list groups under one divider per session.
+    const dd = page.locator('#session-filter');
+    await expect(dd).toBeVisible();
+    await expect(page.locator('.session-divider')).toHaveCount(2);
+    // Filter to one session → only its note shows, no dividers.
+    await dd.selectOption('Voice-capture build');
+    await expect(page.locator('.claude-card')).toHaveCount(1);
+    await expect(page.locator('.claude-card', { hasText: 'Build note' })).toBeVisible();
+    await expect(page.locator('.session-divider')).toHaveCount(0);
+  });
 });
 
 test.describe('WAV encoder (in-page unit check)', () => {

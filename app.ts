@@ -63,10 +63,10 @@ const SHARE_ITEM_KEY = 'shared-audio';
 
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v21';
+const APP_VERSION = 'v22';
 // Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
 // rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
-const BUILD_DATE = 'Jul 1, 2026 · 11:26am';
+const BUILD_DATE = 'Jul 1, 2026 · 11:41am JDT';
 
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
@@ -121,6 +121,9 @@ interface AppState {
   // re-render of #app never tears out the audio — this is what fixes the listen-lag AND lets her "go
   // off the voice-note page and still listen." Cards read this to show a ▶/⏸ playing state.
   playingId: string | null;
+  // v22 — the session she's filtered the Voice/Info tab to (a session_label), or null for "All".
+  // null = show every session, grouped by session divider; a value = show only that session's notes.
+  sessionFilter: string | null;
 }
 
 const state: AppState = {
@@ -139,6 +142,7 @@ const state: AppState = {
   pendingUndo: null,
   pendingOpenNote: null,
   playingId: null,
+  sessionFilter: null,
 };
 
 // ── Key storage (localStorage only, device-only) ─────────────────────────────
@@ -641,6 +645,7 @@ interface LogRow {
   remote: boolean; // from the server inbox (read-only) vs the local buffer (deletable)
   fromClaude?: boolean; // a Claude-pushed "Note from Claude" (vs one of her own captures)
   title?: string | null; // the session SUBJECT, shown as a bold header on Claude notes
+  sessionLabel?: string | null; // v22: which session sent it — groups + filters the Voice/Info tabs
   audioUrl?: string | null; // voice-note she can play (Claude notes only)
   listened?: boolean; // has she heard this Claude note yet
   replySnippet?: string | null; // v15: if this is HER reply to a Claude note, the parent snippet
@@ -678,6 +683,7 @@ function buildLogRows(): LogRow[] {
       remote: true,
       fromClaude: r.from_claude === true,
       title: r.title ?? null,
+      sessionLabel: r.session_label ?? null,
       audioUrl: r.audio_url ?? null,
       listened: r.listened === true,
       replySnippet: r.reply_snippet ?? null,
@@ -872,6 +878,81 @@ function rowsForSegment(items: LogRow[], seg: Segment): LogRow[] {
   return items.filter((it) => segmentOf(it) === seg);
 }
 
+// ── v22: organize the Claude tabs (Voice/Info) BY SESSION ────────────────────────────────────────
+// Her ask: "voice notes sorted by session" + "find a way to do that dropdown — it's too overwhelming
+// all in one place." Notes carry session_label; the Voice/Info tabs get a dropdown to filter to one
+// session, and when showing All they group under light dividers. A null session → an "Earlier" bucket.
+
+const EARLIER_KEY = '__earlier__';
+
+/** A stable grouping key for a row's session (its label, or the "Earlier" bucket for untagged notes). */
+function sessionKeyOf(it: LogRow): string {
+  return (it.sessionLabel ?? '').trim() || EARLIER_KEY;
+}
+
+/** Distinct sessions present in a Claude segment, newest-session-first, with counts. Rows arrive
+ *  newest-first (buildLogRows sorts desc), so first-seen order == newest-session-first. */
+function claudeSessions(
+  items: LogRow[],
+  seg: Segment
+): { label: string; key: string; count: number }[] {
+  const order: string[] = [];
+  const map = new Map<string, { label: string; key: string; count: number }>();
+  for (const it of items) {
+    if (segmentOf(it) !== seg) continue;
+    const key = sessionKeyOf(it);
+    const existing = map.get(key);
+    if (existing) {
+      existing.count++;
+    } else {
+      map.set(key, { label: key === EARLIER_KEY ? 'Earlier' : key, key, count: 1 });
+      order.push(key);
+    }
+  }
+  return order.map((k) => map.get(k) as { label: string; key: string; count: number });
+}
+
+/** The by-session dropdown for a Claude tab (only worth showing with 2+ sessions). */
+function renderSessionDropdown(
+  sessions: { label: string; key: string; count: number }[],
+  active: string | null
+): string {
+  const total = sessions.reduce((n, s) => n + s.count, 0);
+  const opt = (val: string, text: string, sel: boolean): string =>
+    `<option value="${escapeHtml(val)}"${sel ? ' selected' : ''}>${escapeHtml(text)}</option>`;
+  const opts = [opt('', `All sessions · ${total}`, !active)].concat(
+    sessions.map((s) => opt(s.key, `${s.label} · ${s.count}`, active === s.key))
+  );
+  return `<label class="session-filter-wrap">
+      <span class="session-filter-icon" aria-hidden="true">🗂️</span>
+      <select class="session-filter" id="session-filter" aria-label="Filter by session">${opts.join('')}</select>
+    </label>`;
+}
+
+/** Render a segment's cards grouped under session dividers (newest session first). */
+function renderGroupedCards(rows: LogRow[]): string {
+  const order: string[] = [];
+  const groups = new Map<string, LogRow[]>();
+  for (const r of rows) {
+    const key = sessionKeyOf(r);
+    const g = groups.get(key);
+    if (g) {
+      g.push(r);
+    } else {
+      groups.set(key, [r]);
+      order.push(key);
+    }
+  }
+  return order
+    .map((key) => {
+      const groupRows = groups.get(key) as LogRow[];
+      const label = key === EARLIER_KEY ? 'Earlier' : key;
+      const divider = `<li class="session-divider" role="presentation">${escapeHtml(label)} · ${groupRows.length}</li>`;
+      return divider + groupRows.map(renderLogCard).join('');
+    })
+    .join('');
+}
+
 /** "Unheard" = a Claude note she hasn't listened to yet. Her own notes are never "unheard" (the
  *  concept is about Claude reaching her), so Mine has no unheard count. */
 function isUnheard(it: LogRow): boolean {
@@ -937,7 +1018,22 @@ function renderLog(): string {
   const dataReady = remoteCache !== null || !isLoggedIn();
   const activeSegment: Segment = state.segment ?? defaultSegment(items);
   if (state.segment === null && dataReady) state.segment = activeSegment;
-  const segRows = rowsForSegment(items, activeSegment);
+  // v22 — organize the Claude tabs by session: a dropdown to focus one session, dividers when All.
+  const isClaudeSeg = activeSegment === 'voice' || activeSegment === 'info';
+  const sessions = isClaudeSeg ? claudeSessions(items, activeSegment) : [];
+  // A stale filter (she picked a session that's no longer present) falls back to All.
+  const activeFilter =
+    state.sessionFilter && sessions.some((s) => s.key === state.sessionFilter)
+      ? state.sessionFilter
+      : null;
+  let segRows = rowsForSegment(items, activeSegment);
+  if (isClaudeSeg && activeFilter) {
+    segRows = segRows.filter((it) => sessionKeyOf(it) === activeFilter);
+  }
+  // The dropdown only earns its place with 2+ sessions; below that, one flat list is calmer.
+  const sessionDropdown =
+    isClaudeSeg && sessions.length >= 2 ? renderSessionDropdown(sessions, activeFilter) : '';
+  const grouped = isClaudeSeg && !activeFilter && sessions.length >= 2;
   const hasLocal = loadHistory().length > 0;
   const syncState = isLoggedIn()
     ? `<p class="log-sync" id="log-sync">✓ Synced — your notes from every device</p>`
@@ -958,7 +1054,9 @@ function renderLog(): string {
     info: 'No memos from Claude yet.',
   };
   const list = segRows.length
-    ? `<ul class="log-list">${segRows.map(renderLogCard).join('')}</ul>`
+    ? `<ul class="log-list">${
+        grouped ? renderGroupedCards(segRows) : segRows.map(renderLogCard).join('')
+      }</ul>`
     : `<p class="log-empty">${emptyCopy[activeSegment]}</p>`;
   // Only "My Notes" can be cleared (her local buffer) — hide the tool on the Claude tabs.
   const toolsForSegment = activeSegment === 'mine' ? tools : '';
@@ -967,6 +1065,7 @@ function renderLog(): string {
       <button class="icon-btn" id="log-back" aria-label="Back" title="Back">←</button>
       <h1 class="topbar-title">Log</h1>
       <div class="topbar-actions">
+        <button class="icon-btn" id="log-refresh" aria-label="Refresh" title="Check for new notes">↻</button>
         <button class="icon-btn" id="open-settings" aria-label="Settings" title="Settings">⚙️</button>
       </div>
     </header>
@@ -974,6 +1073,7 @@ function renderLog(): string {
       ${renderSegmentedControl(items, activeSegment)}
       ${syncState}
       ${segmentHeader(items, activeSegment)}
+      ${sessionDropdown}
       ${toolsForSegment}
       ${list}
       ${renderUndoSnackbar()}
@@ -1362,6 +1462,12 @@ function wireLog(): void {
     state.screen = 'settings';
     render();
   });
+  // Refresh — pull any new notes. Safe while listening: the player bar is outside #app, so the
+  // re-render doesn't touch the audio (her ask: "refresh in case new stuff comes in, but keep playing").
+  document.getElementById('log-refresh')?.addEventListener('click', () => {
+    showToast('Checking for new notes…');
+    void refreshRemoteLog();
+  });
   document.getElementById('log-login')?.addEventListener('click', () => {
     state.screen = 'settings';
     render();
@@ -1374,9 +1480,16 @@ function wireLog(): void {
       const seg = btn.dataset.seg as Segment | undefined;
       if (!seg) return;
       state.segment = seg;
+      state.sessionFilter = null; // a session filter is per-tab; reset when she switches tabs
       state.copiedId = null;
       render();
     });
+  });
+
+  // v22 — the by-session dropdown: focus one session's notes (or All).
+  document.getElementById('session-filter')?.addEventListener('change', (e) => {
+    state.sessionFilter = (e.target as HTMLSelectElement).value || null;
+    render();
   });
 
   // Undo an archive within the grace window — restore the row + dismiss the snackbar.
@@ -1780,6 +1893,43 @@ if ('serviceWorker' in navigator) {
 
 let playerWired = false;
 let currentNoteId: string | null = null;
+let pendingResume = 0; // seconds to seek to once the media loads (resume-where-you-left-off)
+let lastSavedPos = 0; // throttles position saves during timeupdate
+
+// v22 — remember each note's playback position, so if she clicks away / closes the bar she can pick
+// up where she left off ("if I accidentally click away it should save where I left off so I can
+// continue"). Kept per-note in localStorage; cleared when a note plays to the end.
+const POS_KEY = 'vc.playpos';
+function loadPositions(): Record<string, number> {
+  try {
+    return JSON.parse(localStorage.getItem(POS_KEY) ?? '{}') as Record<string, number>;
+  } catch {
+    return {};
+  }
+}
+function savePosition(id: string, t: number, duration: number): void {
+  try {
+    const map = loadPositions();
+    // Only a MID position is worth resuming — past the first few seconds, before the end.
+    if (t > 4 && (!duration || t < duration - 3)) map[id] = t;
+    else delete map[id];
+    localStorage.setItem(POS_KEY, JSON.stringify(map));
+  } catch {
+    /* storage unavailable — non-fatal */
+  }
+}
+function getPosition(id: string): number {
+  return loadPositions()[id] ?? 0;
+}
+function clearPosition(id: string): void {
+  try {
+    const map = loadPositions();
+    delete map[id];
+    localStorage.setItem(POS_KEY, JSON.stringify(map));
+  } catch {
+    /* non-fatal */
+  }
+}
 
 /** Play a Claude voice note in the persistent bar: load src, show the bar with the subject, apply the
  *  remembered speed, and mark it listened (playing counts as heard). Keeps playing across navigation. */
@@ -1790,8 +1940,15 @@ function playNote(id: string, url: string, subject: string): void {
   if (!bar || !audio) return;
   currentNoteId = id;
   state.playingId = id;
+  lastSavedPos = 0;
   if (subjEl) subjEl.textContent = subject;
-  if (audio.getAttribute('src') !== url) audio.src = url;
+  const srcChanged = audio.getAttribute('src') !== url;
+  if (srcChanged) {
+    audio.src = url;
+    pendingResume = getPosition(id); // fresh load → resume where she left off (seeked on loadedmetadata)
+  } else {
+    pendingResume = 0; // same note still loaded → keep its live position, don't rewind
+  }
   bar.hidden = false;
   audio.playbackRate = getSpeed();
   void audio.play().catch(() => {
@@ -1811,11 +1968,12 @@ function updatePlayButtonsInDom(): void {
   });
 }
 
-/** Stop + hide the bar (her ✕). */
+/** Stop + hide the bar (her ✕). Remembers the position first so a reopen resumes where she left off. */
 function stopPlayer(): void {
   const bar = document.getElementById('player-bar');
   const audio = document.getElementById('player-audio') as HTMLAudioElement | null;
   if (audio) {
+    if (currentNoteId) savePosition(currentNoteId, audio.currentTime, audio.duration);
     audio.pause();
     audio.removeAttribute('src');
     audio.load();
@@ -1840,16 +1998,35 @@ function wirePlayerBar(): void {
   const applyRate = (): void => {
     audio.playbackRate = getSpeed();
   };
-  audio.addEventListener('loadedmetadata', applyRate);
+  audio.addEventListener('loadedmetadata', () => {
+    applyRate();
+    // Resume where she left off (only set on a fresh src load, so it never rewinds a live note).
+    if (pendingResume > 0) {
+      audio.currentTime = pendingResume;
+      pendingResume = 0;
+    }
+  });
   audio.addEventListener('play', () => {
     applyRate();
     if (currentNoteId) state.playingId = currentNoteId;
     updatePlayButtonsInDom();
   });
+  // Remember the position as it plays (throttled) + on pause, so a click-away/close can resume it.
+  audio.addEventListener('timeupdate', () => {
+    if (!currentNoteId) return;
+    if (audio.currentTime - lastSavedPos >= 4) {
+      lastSavedPos = audio.currentTime;
+      savePosition(currentNoteId, audio.currentTime, audio.duration);
+    }
+  });
+  audio.addEventListener('pause', () => {
+    if (currentNoteId) savePosition(currentNoteId, audio.currentTime, audio.duration);
+  });
   audio.addEventListener('ended', () => {
     if (currentNoteId) {
       void persistListened(currentNoteId);
       markListenedInDom(currentNoteId);
+      clearPosition(currentNoteId); // heard to the end — no resume point to keep
     }
     state.playingId = null; // finished — cards go back to ▶ Play (replay re-sets it on 'play')
     updatePlayButtonsInDom();
@@ -1860,6 +2037,14 @@ function wirePlayerBar(): void {
     audio.playbackRate = rate;
     speedBtn.textContent = speedLabel(rate);
     buzz();
+  });
+  // ±10s skip (her ask). Clamp to the media bounds.
+  document.getElementById('player-back')?.addEventListener('click', () => {
+    audio.currentTime = Math.max(0, audio.currentTime - 10);
+  });
+  document.getElementById('player-fwd')?.addEventListener('click', () => {
+    const end = audio.duration || audio.currentTime + 10;
+    audio.currentTime = Math.min(end, audio.currentTime + 10);
   });
   closeBtn?.addEventListener('click', stopPlayer);
   if (speedBtn) speedBtn.textContent = speedLabel(getSpeed());

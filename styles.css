@@ -792,10 +792,28 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* The audio scrubber gets the FULL width of its own row so play/pause/seek are easy to hit. */
+/* The controls row: [⏪10] [scrubber] [10⏩] — the scrubber flexes to fill, skips flank it. */
+.player-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
 .player-audio {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   height: 40px;
+}
+.player-skip {
+  flex-shrink: 0;
+  padding: var(--s2);
+  min-width: 46px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
 }
 /* Speed button — a clear, tappable control (not a hidden native menu). */
 #player-speed.speed-btn {
@@ -818,6 +836,46 @@ body {
   line-height: 1;
   cursor: pointer;
   padding: var(--s1) var(--s2);
+}
+
+/* v22: by-session dropdown + group dividers on the Voice/Info tabs (organize by session). */
+.session-filter-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0 0 var(--s2);
+  padding: var(--s1) var(--s2);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.session-filter-icon {
+  font-size: 14px;
+}
+.session-filter {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-1);
+  font-size: 14px;
+  font-weight: 600;
+  padding: var(--s1) 0;
+  color-scheme: dark; /* native option list renders on a dark surface, not white-on-white */
+}
+.session-divider {
+  list-style: none;
+  margin: var(--s3) 0 var(--s1);
+  padding: var(--s1) 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-2);
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+.session-divider:first-child {
+  margin-top: 0;
 }
 .claude-context {
   margin: 0 0 var(--s2);
