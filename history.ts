@@ -34,6 +34,7 @@ export interface HistoryItem {
   // (anon has no PATCH) so an offline-queued reply still lands with its parent context.
   replyTo?: string; // parent voice_captures row id
   replySnippet?: string; // first ~120 chars of the parent (shown as "↩ re: …")
+  sessionId?: string | null; // v23: parent note's session — a synced reply routes back to that session
 }
 
 function newId(): string {
@@ -102,6 +103,7 @@ export function addCapture(
   if (reply && reply.replyTo) {
     item.replyTo = reply.replyTo;
     item.replySnippet = reply.replySnippet;
+    if (reply.sessionId) item.sessionId = reply.sessionId;
   }
   const items = loadHistory();
   items.unshift(item);
@@ -161,7 +163,11 @@ export async function syncPending(): Promise<number> {
     try {
       const reply =
         item.replyTo != null
-          ? { replyTo: item.replyTo, replySnippet: item.replySnippet ?? '' }
+          ? {
+              replyTo: item.replyTo,
+              replySnippet: item.replySnippet ?? '',
+              sessionId: item.sessionId ?? null,
+            }
           : undefined;
       await saveCapture(item.transcript, item.durationSeconds, item.category, item.source, reply);
       item.synced = true;

@@ -65,10 +65,10 @@ const SHARE_ITEM_KEY = 'shared-audio';
 
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v25';
+const APP_VERSION = 'v26';
 // Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
 // rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
-const BUILD_DATE = 'Jul 1, 2026 · 12:36pm JDT';
+const BUILD_DATE = 'Jul 1, 2026 · 12:51pm JDT';
 
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
@@ -111,7 +111,7 @@ interface AppState {
   segment: Segment | null;
   // v15 — a reply she's recording: the parent Claude-note id + its snippet ride along on the next
   // capture so it lands threaded. Cleared after the capture saves (or she cancels).
-  replyContext: { replyTo: string; replySnippet: string } | null;
+  replyContext: { replyTo: string; replySnippet: string; sessionId?: string | null } | null;
   // v15 — the row currently in its ~6s "Archived — Undo" window (so Undo can restore it). The row
   // is already hidden from the list; this just keeps the snackbar + the restore handle alive.
   pendingUndo: { id: string; remote: boolean } | null;
@@ -544,11 +544,13 @@ function normalizeAudioMime(rawType: string, filename: string): string {
 
 /** Take the pending reply context (if she tapped Reply on a Claude note) and clear it, so the next
  *  capture lands threaded exactly once. Returns undefined when this isn't a reply. */
-function consumeReplyContext(): { replyTo: string; replySnippet: string } | undefined {
+function consumeReplyContext():
+  | { replyTo: string; replySnippet: string; sessionId?: string | null }
+  | undefined {
   const rc = state.replyContext;
   if (!rc) return undefined;
   state.replyContext = null;
-  return { replyTo: rc.replyTo, replySnippet: rc.replySnippet };
+  return { replyTo: rc.replyTo, replySnippet: rc.replySnippet, sessionId: rc.sessionId ?? null };
 }
 
 /** Fire the typed thought straight to the Claude inbox (no screen change — keep the keyboard up). */
@@ -1191,8 +1193,8 @@ function renderClaudeCard(it: LogRow): string {
     ? `<span class="listened-badge">✓ Listened</span>`
     : `<button class="btn-text mark-listened" data-id="${escapeHtml(it.id)}">Mark as listened</button>`;
   // Reply (one level): records a voice/text note that lands threaded with reply_to + a snippet.
-  const reply = `<button class="btn-text reply-btn" data-id="${escapeHtml(
-    it.id
+  const reply = `<button class="btn-text reply-btn" data-id="${escapeHtml(it.id)}" data-session="${escapeHtml(
+    it.sessionId ?? ''
   )}" data-snippet="${escapeHtml(truncate(it.transcript, REPLY_SNIPPET_MAX))}">🎙️ Reply</button>`;
   const contextLine = `<p class="claude-context">${
     it.audioUrl ? '🎧 Voice note' : '📝 Memo'
@@ -1596,7 +1598,12 @@ function wireLog(): void {
       const id = btn.dataset.id;
       const snippet = btn.dataset.snippet ?? '';
       if (!id) return;
-      state.replyContext = { replyTo: id, replySnippet: snippet };
+      // Carry the parent note's session so the reply routes back to the session that sent it.
+      state.replyContext = {
+        replyTo: id,
+        replySnippet: snippet,
+        sessionId: btn.dataset.session ?? null,
+      };
       state.screen = 'compose';
       render();
     });

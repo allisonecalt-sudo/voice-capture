@@ -867,6 +867,33 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
     await expect(page.locator('.reply-banner')).toHaveCount(0);
   });
 
+  test('a reply carries the parent note session_id (routes back to that session)', async ({
+    page,
+  }) => {
+    await seedLoggedIn(page, [
+      {
+        id: 'cn1',
+        title: 'Build note',
+        transcript: 'about the build',
+        source: 'text',
+        created_at: new Date().toISOString(),
+        from_claude: true,
+        audio_url: 'https://x/storage/v1/object/public/voice-notes/cn1.mp3',
+        listened: false,
+        session_id: 'voice-capture-build-2026-07-01',
+        session_label: 'Voice-capture build',
+      },
+    ]);
+    await page.locator('.claude-card .reply-btn').click();
+    await expect(page.locator('.screen-compose')).toBeVisible();
+    await page.locator('#draft').fill('yes that works');
+    await page.locator('#compose-action').click();
+    await expect.poll(async () => (await posts(page)).length).toBe(1);
+    const [row] = await posts(page);
+    expect((row as { reply_to?: string }).reply_to).toBe('cn1');
+    expect((row as { session_id?: string }).session_id).toBe('voice-capture-build-2026-07-01');
+  });
+
   test('the bar speed button cycles 1× → 1.25× → 1.5× → 2× → 0.75× and remembers it', async ({
     page,
   }) => {

@@ -46,6 +46,9 @@ export type CaptureSource = 'voice' | 'text';
 export interface ReplyContext {
   replyTo: string;
   replySnippet: string;
+  // v23: the parent note's session — stamped onto the reply so it ROUTES back to the session that
+  // sent the note (each session watches only its own thread; no cross-wires, no wrong-session pings).
+  sessionId?: string | null;
 }
 
 interface CapturePayload {
@@ -55,6 +58,7 @@ interface CapturePayload {
   category?: Category;
   reply_to?: string;
   reply_snippet?: string;
+  session_id?: string;
 }
 
 /**
@@ -85,6 +89,7 @@ export async function saveCapture(
   if (reply && reply.replyTo) {
     payload.reply_to = reply.replyTo;
     payload.reply_snippet = reply.replySnippet;
+    if (reply.sessionId) payload.session_id = reply.sessionId;
   }
 
   const res = await fetch(SUPABASE_URL, {

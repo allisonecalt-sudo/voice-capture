@@ -48,6 +48,8 @@ export async function saveCapture(transcript, durationSeconds, category, source 
     if (reply && reply.replyTo) {
         payload.reply_to = reply.replyTo;
         payload.reply_snippet = reply.replySnippet;
+        if (reply.sessionId)
+            payload.session_id = reply.sessionId;
     }
     const res = await fetch(SUPABASE_URL, {
         method: 'POST',

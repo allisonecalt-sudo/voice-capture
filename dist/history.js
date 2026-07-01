@@ -80,6 +80,8 @@ export function addCapture(transcript, durationSeconds, source = 'voice', reply)
     if (reply && reply.replyTo) {
         item.replyTo = reply.replyTo;
         item.replySnippet = reply.replySnippet;
+        if (reply.sessionId)
+            item.sessionId = reply.sessionId;
     }
     const items = loadHistory();
     items.unshift(item);
@@ -138,7 +140,11 @@ export async function syncPending() {
             continue;
         try {
             const reply = item.replyTo != null
-                ? { replyTo: item.replyTo, replySnippet: item.replySnippet ?? '' }
+                ? {
+                    replyTo: item.replyTo,
+                    replySnippet: item.replySnippet ?? '',
+                    sessionId: item.sessionId ?? null,
+                }
                 : undefined;
             await saveCapture(item.transcript, item.durationSeconds, item.category, item.source, reply);
             item.synced = true;

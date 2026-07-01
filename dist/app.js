@@ -39,10 +39,10 @@ const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v25';
+const APP_VERSION = 'v26';
 // Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
 // rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
-const BUILD_DATE = 'Jul 1, 2026 · 12:36pm JDT';
+const BUILD_DATE = 'Jul 1, 2026 · 12:51pm JDT';
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
 const SPEED_STEPS = [1, 1.25, 1.5, 2, 0.75];
@@ -466,7 +466,7 @@ function consumeReplyContext() {
     if (!rc)
         return undefined;
     state.replyContext = null;
-    return { replyTo: rc.replyTo, replySnippet: rc.replySnippet };
+    return { replyTo: rc.replyTo, replySnippet: rc.replySnippet, sessionId: rc.sessionId ?? null };
 }
 /** Fire the typed thought straight to the Claude inbox (no screen change — keep the keyboard up). */
 function sendComposed() {
@@ -1037,7 +1037,7 @@ function renderClaudeCard(it) {
         ? `<span class="listened-badge">✓ Listened</span>`
         : `<button class="btn-text mark-listened" data-id="${escapeHtml(it.id)}">Mark as listened</button>`;
     // Reply (one level): records a voice/text note that lands threaded with reply_to + a snippet.
-    const reply = `<button class="btn-text reply-btn" data-id="${escapeHtml(it.id)}" data-snippet="${escapeHtml(truncate(it.transcript, REPLY_SNIPPET_MAX))}">🎙️ Reply</button>`;
+    const reply = `<button class="btn-text reply-btn" data-id="${escapeHtml(it.id)}" data-session="${escapeHtml(it.sessionId ?? '')}" data-snippet="${escapeHtml(truncate(it.transcript, REPLY_SNIPPET_MAX))}">🎙️ Reply</button>`;
     const contextLine = `<p class="claude-context">${it.audioUrl ? '🎧 Voice note' : '📝 Memo'} from Claude · ${escapeHtml(absoluteTime(it.createdAt))}</p>`;
     const bodyHtml = body ? `<p class="log-text" dir="auto">${escapeHtml(body)}</p>` : '';
     const meta = `<div class="log-meta">
@@ -1423,7 +1423,12 @@ function wireLog() {
             const snippet = btn.dataset.snippet ?? '';
             if (!id)
                 return;
-            state.replyContext = { replyTo: id, replySnippet: snippet };
+            // Carry the parent note's session so the reply routes back to the session that sent it.
+            state.replyContext = {
+                replyTo: id,
+                replySnippet: snippet,
+                sessionId: btn.dataset.session ?? null,
+            };
             state.screen = 'compose';
             render();
         });
