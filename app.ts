@@ -63,13 +63,14 @@ const SHARE_ITEM_KEY = 'shared-audio';
 
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v19';
-// Last-edited date shown next to the version (e.g. "v9 · Jun 18, 2026"). Update with APP_VERSION.
-const BUILD_DATE = 'Jul 1, 2026';
+const APP_VERSION = 'v20';
+// Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
+// rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
+const BUILD_DATE = 'Jul 1, 2026 · 10:51am';
 
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
-const SPEED_STEPS = [1, 1.25, 1.5, 0.75] as const;
+const SPEED_STEPS = [1, 1.25, 1.5, 2, 0.75] as const;
 const SPEED_KEY = 'vc.playbackRate';
 
 // Set ONLY after a subscription row actually lands in Supabase — NOT on a bare permission grant.
@@ -115,6 +116,11 @@ interface AppState {
   // v19 — a note to open + scroll to (from a notification tap / ?note= deep link). Held until the
   // inbox read lands and the card is in the DOM, then consumed by tryOpenPendingNote().
   pendingOpenNote: string | null;
+  // v20 — the id of the Claude note currently loaded in the PERSISTENT player bar. The player lives
+  // OUTSIDE #app, so it keeps playing while she navigates (Log → compose to write a reply, etc.) and a
+  // re-render of #app never tears out the audio — this is what fixes the listen-lag AND lets her "go
+  // off the voice-note page and still listen." Cards read this to show a ▶/⏸ playing state.
+  playingId: string | null;
 }
 
 const state: AppState = {
@@ -132,6 +138,7 @@ const state: AppState = {
   replyContext: null,
   pendingUndo: null,
   pendingOpenNote: null,
+  playingId: null,
 };
 
 // ── Key storage (localStorage only, device-only) ─────────────────────────────
@@ -198,7 +205,7 @@ function setPushSubscribed(on: boolean): void {
   }
 }
 
-/** The next rate in the cycle (wraps): 1× → 1.25× → 1.5× → 0.75× → 1× … */
+/** The next rate in the cycle (wraps): 1× → 1.25× → 1.5× → 2× → 0.75× → 1× … */
 function nextSpeed(rate: number): number {
   const i = (SPEED_STEPS as readonly number[]).indexOf(rate);
   return SPEED_STEPS[(i + 1) % SPEED_STEPS.length];
@@ -1021,18 +1028,26 @@ function renderLogCard(it: LogRow): string {
  *  notes carry the one accent until she plays or marks them; listened ones dim + sink. */
 function renderClaudeCard(it: LogRow): string {
   const copied = state.copiedId === it.id;
-  const speed = getSpeed();
-  // The audio player + its speed cycle button. The subject is spoken at the top of the audio
-  // (push-claude-note.py prepends the title), so playback always states which session it's from.
+  // SUBJECT first (the play button needs it for the now-playing bar). Prefer the explicit `title` (the
+  // session subject); for older notes without one, derive it from the first line. Body = the remaining
+  // text — with an explicit title the full transcript; without one, the lines after the subject (no
+  // duplication), or the full text for a single long line (never drop content).
+  const rawTitle = (it.title ?? '').trim();
+  const lines = it.transcript.split('\n');
+  const firstLine = (lines[0] ?? '').trim();
+  const rest = lines.slice(1).join('\n').trim();
+  const subject = rawTitle || truncate(firstLine, 70);
+  const body = rawTitle ? it.transcript : rest || (firstLine.length > 70 ? it.transcript : '');
+  // Voice notes play in the PERSISTENT bar (outside #app), so playback survives navigation and a
+  // re-render never tears the audio out. A ▶ Play button hands the note to playNote() instead of
+  // embedding an <audio> in the (rebuilt) list.
+  const playing = state.playingId === it.id;
   const player = it.audioUrl
-    ? `<div class="claude-player">
-         <audio class="claude-audio" controls preload="none" data-speed="${speed}" data-id="${escapeHtml(
-           it.id
-         )}" src="${escapeHtml(it.audioUrl)}"></audio>
-         <button type="button" class="speed-btn" data-id="${escapeHtml(
-           it.id
-         )}" aria-label="Playback speed">${speedLabel(speed)}</button>
-       </div>`
+    ? `<button type="button" class="card-play${playing ? ' is-playing' : ''}" data-id="${escapeHtml(
+        it.id
+      )}" data-url="${escapeHtml(it.audioUrl)}" data-subject="${escapeHtml(subject)}">${
+        playing ? '▶ Playing' : '▶ Play'
+      }</button>`
     : '';
   const listened = it.listened
     ? `<span class="listened-badge">✓ Listened</span>`
@@ -1041,17 +1056,6 @@ function renderClaudeCard(it: LogRow): string {
   const reply = `<button class="btn-text reply-btn" data-id="${escapeHtml(
     it.id
   )}" data-snippet="${escapeHtml(truncate(it.transcript, REPLY_SNIPPET_MAX))}">🎙️ Reply</button>`;
-  // Every note shows its SUBJECT as a bold header (her rule: "every voice note needs the subject
-  // attached"). Prefer the explicit `title` (the session subject); for older notes without one, derive
-  // it from the note's first line. The body shows the remaining text — with an explicit title the full
-  // transcript; without one, the lines after the subject (so the header isn't duplicated below), or
-  // the full text when it's a single long line (never drop content).
-  const rawTitle = (it.title ?? '').trim();
-  const lines = it.transcript.split('\n');
-  const firstLine = (lines[0] ?? '').trim();
-  const rest = lines.slice(1).join('\n').trim();
-  const subject = rawTitle || truncate(firstLine, 70);
-  const body = rawTitle ? it.transcript : rest || (firstLine.length > 70 ? it.transcript : '');
   return `
     <li class="log-card claude-card${it.listened ? ' is-listened' : ' is-unlistened'}" data-card-id="${escapeHtml(
       it.id
@@ -1431,25 +1435,15 @@ function wireLog(): void {
     });
   });
 
-  // Playback-speed cycle (1× → 1.25× → 1.5× → 0.75×). Applies live to THIS audio + remembers the
-  // choice; no full re-render (that would stop playback) — just relabel + set every player's rate.
-  document.querySelectorAll<HTMLButtonElement>('.speed-btn').forEach((btn) => {
+  // ▶ Play a Claude voice note — hand it to the PERSISTENT bar (playNote), which keeps playing while
+  // she navigates. The old inline <audio> + per-card speed chip are gone; speed now lives on the bar.
+  document.querySelectorAll<HTMLButtonElement>('.card-play').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const rate = nextSpeed(getSpeed());
-      setSpeed(rate);
-      // Relabel EVERY speed chip, not just the tapped one — the rate is global (one remembered
-      // speed applied to all players), so a second card's chip must not keep showing a stale label
-      // while its audio actually plays at the changed rate.
-      const label = speedLabel(rate);
-      document
-        .querySelectorAll<HTMLButtonElement>('.speed-btn')
-        .forEach((b) => (b.textContent = label));
-      // Apply to all currently-rendered players so the remembered rate is consistent on the screen.
-      document.querySelectorAll<HTMLAudioElement>('audio.claude-audio').forEach((a) => {
-        a.playbackRate = rate;
-        a.dataset.speed = String(rate);
-      });
-      buzz();
+      const id = btn.dataset.id;
+      const url = btn.dataset.url;
+      const subject = btn.dataset.subject ?? '';
+      if (!id || !url) return;
+      playNote(id, url, subject);
     });
   });
 
@@ -1466,36 +1460,15 @@ function wireLog(): void {
     });
   });
 
-  // Each player starts at the remembered playback rate. Playing OR finishing counts as heard:
-  //  - 'play'  → mark the instant it starts (no re-render — that would stop playback).
-  //  - 'ended' → auto-mark on full play-through (her v15 ask), idempotent with 'play'.
-  document.querySelectorAll<HTMLAudioElement>('audio.claude-audio').forEach((audio) => {
-    const rate = Number(audio.dataset.speed) || getSpeed();
-    audio.playbackRate = rate;
-    audio.addEventListener(
-      'play',
-      () => {
-        const id = audio.dataset.id;
-        if (!id) return;
-        // Re-assert the rate on play (some engines reset it before the first play).
-        audio.playbackRate = Number(audio.dataset.speed) || getSpeed();
-        void persistListened(id);
-        markListenedInDom(id);
-      },
-      { once: true }
-    );
-    audio.addEventListener('ended', () => {
-      const id = audio.dataset.id;
-      if (!id) return;
-      void persistListened(id);
-      markListenedInDom(id);
-    });
-  });
+  // (Playback + listened-marking now live on the persistent player bar — wirePlayerBar(), wired once
+  // at boot — so there is no per-card <audio> to attach here.)
 }
 
 /** Soft-archive a remote/synced row: hide it immediately (optimistic), show the Undo snackbar, and
  *  commit the authenticated PATCH after the grace window unless she undoes. */
 async function archiveRow(id: string): Promise<void> {
+  // If the note being archived is the one playing in the bar, stop it (it's leaving the inbox).
+  if (state.playingId === id) stopPlayer();
   // Optimistically drop it from view + open the Undo window.
   state.pendingUndo = { id, remote: true };
   if (state.copiedId === id) state.copiedId = null;
@@ -1800,8 +1773,93 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+// ── v20: persistent "now playing" player bar (lives OUTSIDE #app; survives navigation) ──────────
+// The bar's <audio> is never rebuilt by render(), so a voice note keeps playing while she moves
+// around the app (Log → compose to write a reply). This is what fixes the listen-lag AND delivers
+// "go off the voice-note page and still listen." Cards just hand a note to playNote().
+
+let playerWired = false;
+let currentNoteId: string | null = null;
+
+/** Play a Claude voice note in the persistent bar: load src, show the bar with the subject, apply the
+ *  remembered speed, and mark it listened (playing counts as heard). Keeps playing across navigation. */
+function playNote(id: string, url: string, subject: string): void {
+  const bar = document.getElementById('player-bar');
+  const audio = document.getElementById('player-audio') as HTMLAudioElement | null;
+  const subjEl = document.getElementById('player-subject');
+  if (!bar || !audio) return;
+  currentNoteId = id;
+  state.playingId = id;
+  if (subjEl) subjEl.textContent = subject;
+  if (audio.getAttribute('src') !== url) audio.src = url;
+  bar.hidden = false;
+  audio.playbackRate = getSpeed();
+  void audio.play().catch(() => {
+    /* a gesture/autoplay hiccup — the native controls in the bar still work */
+  });
+  void persistListened(id);
+  markListenedInDom(id);
+  updatePlayButtonsInDom();
+}
+
+/** Reflect which card is playing (▶ Playing) on the visible cards, without a full re-render. */
+function updatePlayButtonsInDom(): void {
+  document.querySelectorAll<HTMLElement>('.card-play').forEach((b) => {
+    const on = b.dataset.id === state.playingId;
+    b.classList.toggle('is-playing', on);
+    b.textContent = on ? '▶ Playing' : '▶ Play';
+  });
+}
+
+/** Stop + hide the bar (her ✕). */
+function stopPlayer(): void {
+  const bar = document.getElementById('player-bar');
+  const audio = document.getElementById('player-audio') as HTMLAudioElement | null;
+  if (audio) {
+    audio.pause();
+    audio.removeAttribute('src');
+    audio.load();
+  }
+  if (bar) bar.hidden = true;
+  currentNoteId = null;
+  state.playingId = null;
+  updatePlayButtonsInDom();
+}
+
+/** Wire the persistent bar ONCE — its elements are static in index.html and never rebuilt. */
+function wirePlayerBar(): void {
+  if (playerWired) return;
+  const audio = document.getElementById('player-audio') as HTMLAudioElement | null;
+  const speedBtn = document.getElementById('player-speed');
+  const closeBtn = document.getElementById('player-close');
+  if (!audio) return; // bar absent (e.g. a test harness without the shell) — no-op
+  playerWired = true;
+  audio.addEventListener('play', () => {
+    if (currentNoteId) state.playingId = currentNoteId;
+    updatePlayButtonsInDom();
+  });
+  audio.addEventListener('ended', () => {
+    if (currentNoteId) {
+      void persistListened(currentNoteId);
+      markListenedInDom(currentNoteId);
+    }
+    state.playingId = null; // finished — cards go back to ▶ Play (replay re-sets it on 'play')
+    updatePlayButtonsInDom();
+  });
+  speedBtn?.addEventListener('click', () => {
+    const rate = nextSpeed(getSpeed());
+    setSpeed(rate);
+    audio.playbackRate = rate;
+    speedBtn.textContent = speedLabel(rate);
+    buzz();
+  });
+  closeBtn?.addEventListener('click', stopPlayer);
+  if (speedBtn) speedBtn.textContent = speedLabel(getSpeed());
+}
+
 // ── Boot ─────────────────────────────────────────────────────────────────────
 
+wirePlayerBar(); // the persistent player is live from boot, independent of the #app render cycle
 restoreLastView(); // a refresh keeps her on the tab she was on...
 handleNoteDeepLink(); // ...unless a notification deep-link says open a specific note.
 render();

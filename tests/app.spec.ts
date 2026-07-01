@@ -619,7 +619,8 @@ test.describe('cross-device sync (logged in)', () => {
     await expect(page.locator('.seg[data-seg="voice"]')).toHaveClass(/is-active/);
     const card = page.locator('.claude-card');
     await expect(card).toHaveCount(1);
-    await expect(card.locator('audio.claude-audio')).toHaveCount(1);
+    // A voice note shows a ▶ Play button (it plays in the persistent bar, not an inline <audio>).
+    await expect(card.locator('.card-play')).toHaveCount(1);
     await expect(card).toHaveClass(/is-unlistened/);
     // Marking listened swaps the button for the badge and dims the card (sunk + checked off).
     await card.locator('.mark-listened').click();
@@ -786,18 +787,35 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
     await expect(page.locator('.claude-card', { hasText: 'just arrived' })).toBeVisible();
   });
 
-  test('auto-mark on audio "ended" flips the note to listened', async ({ page }) => {
+  test('playing a Claude note in the persistent bar marks it listened', async ({ page }) => {
     await seedLoggedIn(page);
     const card = page.locator('.claude-card');
     await expect(card).toHaveClass(/is-unlistened/);
-    // Fire the <audio> 'ended' event (full play-through) — the app auto-marks it.
-    await card.locator('audio.claude-audio').dispatchEvent('ended');
+    // Tap ▶ Play → the note loads in the persistent bar; playing counts as heard (auto-marks).
+    await card.locator('.card-play').click();
     await expect(card.locator('.listened-badge')).toBeVisible();
     await expect(card).toHaveClass(/is-listened/);
     // It persisted via an authenticated PATCH carrying listened=true.
     await expect
       .poll(async () => (await patches(page)).some((p) => p.body?.listened === true))
       .toBe(true);
+  });
+
+  test('a playing voice note survives navigation (persistent bar, outside #app)', async ({
+    page,
+  }) => {
+    await seedLoggedIn(page);
+    // Play a note → it loads in the persistent bar.
+    await page.locator('.claude-card .card-play').first().click();
+    await expect(page.locator('#player-bar')).toBeVisible();
+    const srcBefore = await page.locator('#player-audio').getAttribute('src');
+    expect(srcBefore).toBeTruthy();
+    // Leave the Log to write a reply — this rebuilds #app entirely (the old inline <audio> would die).
+    await page.locator('.claude-card .reply-btn').first().click();
+    await expect(page.locator('.screen-compose')).toBeVisible();
+    // The bar lives OUTSIDE #app, so it's untouched: same <audio> element, same src — still playing.
+    await expect(page.locator('#player-bar')).toBeVisible();
+    expect(await page.locator('#player-audio').getAttribute('src')).toBe(srcBefore);
   });
 
   test('archive soft-deletes with an Undo snackbar (no confirm dialog)', async ({ page }) => {
@@ -839,63 +857,33 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
     await expect(page.locator('.reply-banner')).toHaveCount(0);
   });
 
-  test('the speed button cycles 1× → 1.25× → 1.5× → 0.75× and remembers it', async ({ page }) => {
+  test('the bar speed button cycles 1× → 1.25× → 1.5× → 2× → 0.75× and remembers it', async ({
+    page,
+  }) => {
     await seedLoggedIn(page);
-    const speed = page.locator('.speed-btn').first();
+    // Speed is ONE control on the persistent bar now (not a per-card chip) — open the bar first.
+    await page.locator('.claude-card .card-play').first().click();
+    const speed = page.locator('#player-speed');
     await expect(speed).toHaveText('1×');
     await speed.click();
     await expect(speed).toHaveText('1.25×');
     await speed.click();
     await expect(speed).toHaveText('1.5×');
     await speed.click();
+    await expect(speed).toHaveText('2×');
+    await speed.click();
     await expect(speed).toHaveText('0.75×');
     await speed.click();
     await expect(speed).toHaveText('1×');
-    // The audio element's playbackRate tracks the chip.
+    // The bar audio's playbackRate tracks the button.
     await speed.click(); // → 1.25×
     const rate = await page
-      .locator('.claude-card audio.claude-audio')
-      .first()
+      .locator('#player-audio')
       .evaluate((a: HTMLAudioElement) => a.playbackRate);
     expect(rate).toBeCloseTo(1.25, 2);
     // Persisted to localStorage.
     const stored = await page.evaluate(() => window.localStorage.getItem('vc.playbackRate'));
     expect(stored).toBe('1.25');
-  });
-
-  test('changing speed relabels EVERY voice chip, not just the tapped one', async ({ page }) => {
-    // Two unheard voice notes → two speed chips. The rate is global, so tapping ONE chip must
-    // relabel BOTH (a second chip must not keep showing a stale "1×" while audio plays at 0.75×).
-    await seedLoggedIn(page, [
-      {
-        id: 'v1',
-        transcript: 'Voice note one',
-        source: 'text',
-        created_at: new Date(Date.now() - 5_000).toISOString(),
-        from_claude: true,
-        audio_url:
-          'https://hpiyvnfhoqnnnotrmwaz.supabase.co/storage/v1/object/public/voice-notes/v1.mp3',
-        listened: false,
-      },
-      {
-        id: 'v2',
-        transcript: 'Voice note two',
-        source: 'text',
-        created_at: new Date(Date.now() - 10_000).toISOString(),
-        from_claude: true,
-        audio_url:
-          'https://hpiyvnfhoqnnnotrmwaz.supabase.co/storage/v1/object/public/voice-notes/v2.mp3',
-        listened: false,
-      },
-    ]);
-    const chips = page.locator('.speed-btn');
-    await expect(chips).toHaveCount(2);
-    await expect(chips.nth(0)).toHaveText('1×');
-    await expect(chips.nth(1)).toHaveText('1×');
-    // Tap only the FIRST chip → BOTH must update to 1.25×.
-    await chips.nth(0).click();
-    await expect(chips.nth(0)).toHaveText('1.25×');
-    await expect(chips.nth(1)).toHaveText('1.25×');
   });
 
   test('her reply renders with a "↩ re: …" tag in My Notes', async ({ page }) => {
