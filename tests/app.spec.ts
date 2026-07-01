@@ -370,7 +370,7 @@ test.describe('shared WhatsApp voice note (Web Share Target)', () => {
     await page.goto('/');
   });
 
-  test('a shared note auto-saves as source:voice', async ({ page }) => {
+  test('a shared note auto-saves as source:whatsapp (its own Shared section)', async ({ page }) => {
     await page.evaluate(async () => {
       const cache = await caches.open('voice-capture-share');
       const headers = new Headers();
@@ -384,7 +384,7 @@ test.describe('shared WhatsApp voice note (Web Share Target)', () => {
     await expect.poll(async () => (await posts(page)).length).toBe(1);
     const [row] = await posts(page);
     expect(row.transcript).toBe(FAKE_TRANSCRIPT);
-    expect(row.source).toBe('voice');
+    expect(row.source).toBe('whatsapp');
     // One-shot: the cached share is consumed, and the ?shared flag stripped.
     const leftover = await page.evaluate(async () => {
       const cache = await caches.open('voice-capture-share');

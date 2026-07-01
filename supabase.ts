@@ -37,7 +37,7 @@ export type Category = 'todo' | 'thought';
 // How the capture entered the app: a spoken+transcribed note ('voice') or one she typed
 // straight in ('text'). Claude can treat them differently — typed text is trustworthy as-is,
 // a voice transcript may carry mishears. Stored in the row's `source` column.
-export type CaptureSource = 'voice' | 'text';
+export type CaptureSource = 'voice' | 'text' | 'whatsapp';
 
 // A threaded voice/text reply to a "Note from Claude" (v15). `reply_to` is the parent row's id
 // (self-FK on the table); `reply_snippet` is the first ~120 chars of that parent's text, carried

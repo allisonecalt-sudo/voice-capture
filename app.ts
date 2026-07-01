@@ -44,6 +44,7 @@ import {
   fetchSessionPresence,
   markListened,
   unarchiveCapture,
+  type CaptureSource,
   type RemoteCapture,
   type SessionPresence,
 } from './supabase.js';
@@ -65,10 +66,10 @@ const SHARE_ITEM_KEY = 'shared-audio';
 
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v26';
+const APP_VERSION = 'v27';
 // Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
 // rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
-const BUILD_DATE = 'Jul 1, 2026 · 12:51pm JDT';
+const BUILD_DATE = 'Jul 1, 2026 · 1:09pm JDT';
 
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
@@ -91,7 +92,7 @@ type Screen = 'compose' | 'recording' | 'transcribing' | 'log' | 'settings';
 
 // The three content segments of the Log (her proven top-segmented-control pattern). Views of ONE
 // inbox, never a tab bar: 🎤 her own captures · 🎧 Claude voice notes · 📝 Claude written memos.
-type Segment = 'mine' | 'voice' | 'info';
+type Segment = 'mine' | 'voice' | 'info' | 'shared';
 
 interface AppState {
   screen: Screen;
@@ -427,7 +428,8 @@ function resumeRecording(): void {
 async function transcribeBlob(
   blob: Blob,
   mimeType: string,
-  durationSeconds: number
+  durationSeconds: number,
+  source: CaptureSource = 'voice'
 ): Promise<void> {
   state.screen = 'transcribing';
   render();
@@ -443,7 +445,7 @@ async function transcribeBlob(
       showToast('Nothing to save');
       return;
     }
-    addCapture(text, durationSeconds, 'voice', consumeReplyContext()); // local-first, never lose it
+    addCapture(text, durationSeconds, source, consumeReplyContext()); // local-first, never lose it
     state.pendingVoice = null; // succeeded — nothing left to retry
     state.screen = 'compose';
     render();
@@ -504,7 +506,7 @@ async function ingestSharedAudio(): Promise<void> {
   const blob = await res.blob();
   const filename = decodeURIComponent(res.headers.get('X-Shared-Filename') ?? '');
   const mimeType = normalizeAudioMime(res.headers.get('Content-Type') ?? blob.type, filename);
-  await transcribeBlob(blob, mimeType, 0);
+  await transcribeBlob(blob, mimeType, 0, 'whatsapp'); // a shared clip → its own "Shared" section
 }
 
 /**
@@ -886,10 +888,10 @@ function renderTranscribing(): string {
 
 // ── Segments (the 3-view Log) ─────────────────────────────────────────────────
 
-/** Which of the 3 segments a row belongs to: 🎤 Mine (her captures) · 🎧 Voice (Claude audio) ·
- *  📝 Info (Claude written memos — the מכונים/כללית lists live here). */
+/** Which segment a row belongs to: 🎤 Mine (her own captures) · 💬 Shared (a WhatsApp/other clip she
+ *  shared in to transcribe) · 🎧 Voice (Claude audio) · 📝 Info (Claude written memos). */
 function segmentOf(it: LogRow): Segment {
-  if (!it.fromClaude) return 'mine';
+  if (!it.fromClaude) return it.source === 'whatsapp' ? 'shared' : 'mine';
   return it.audioUrl ? 'voice' : 'info';
 }
 
@@ -1006,6 +1008,7 @@ function defaultSegment(items: LogRow[]): Segment {
 
 const SEGMENT_META: Record<Segment, { icon: string; label: string }> = {
   mine: { icon: '🎤', label: 'My Notes' },
+  shared: { icon: '💬', label: 'Shared' },
   voice: { icon: '🎧', label: 'Voice' },
   info: { icon: '📝', label: 'Info' },
 };
@@ -1016,21 +1019,26 @@ const SEGMENT_META: Record<Segment, { icon: string; label: string }> = {
 function renderSegmentedControl(items: LogRow[], active: Segment): string {
   const seg = (s: Segment): string => {
     const meta = SEGMENT_META[s];
-    const n = s === 'mine' ? 0 : unheardCount(items, s);
+    const n = s === 'mine' || s === 'shared' ? 0 : unheardCount(items, s);
     const badge = n > 0 ? `<span class="seg-badge">${n}</span>` : '';
     return `<button class="seg${s === active ? ' is-active' : ''}" data-seg="${s}"
               role="tab" aria-selected="${s === active}">
         <span class="seg-icon" aria-hidden="true">${meta.icon}</span><span class="seg-label">${meta.label}</span>${badge}
       </button>`;
   };
-  return `<div class="segmented" role="tablist">${seg('mine')}${seg('voice')}${seg('info')}</div>`;
+  // The 💬 Shared tab only appears once she's actually shared a clip in — no empty tab clutter.
+  const hasShared = items.some((it) => segmentOf(it) === 'shared');
+  const tabs: Segment[] = hasShared
+    ? ['mine', 'shared', 'voice', 'info']
+    : ['mine', 'voice', 'info'];
+  return `<div class="segmented" role="tablist">${tabs.map(seg).join('')}</div>`;
 }
 
 /** The per-segment header: "N unheard" for the Claude tabs, "All caught up ✓" when zero. Mine just
  *  shows a plain count of her notes. Counts stated, never scolded (anti-quit register). */
 function segmentHeader(items: LogRow[], seg: Segment): string {
-  if (seg === 'mine') {
-    const n = items.filter((it) => segmentOf(it) === 'mine').length;
+  if (seg === 'mine' || seg === 'shared') {
+    const n = items.filter((it) => segmentOf(it) === seg).length;
     const label = n === 0 ? 'No notes yet' : `${n} note${n === 1 ? '' : 's'}`;
     return `<p class="segment-header">${label}</p>`;
   }
@@ -1089,6 +1097,7 @@ function renderLog(): string {
   // states are gentle + segment-specific (anti-quit register — never "you missed", just calm).
   const emptyCopy: Record<Segment, string> = {
     mine: 'Nothing captured yet.',
+    shared: 'Nothing shared in yet.',
     voice: 'No voice notes from Claude yet.',
     info: 'No memos from Claude yet.',
   };
