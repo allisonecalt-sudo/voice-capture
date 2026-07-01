@@ -737,6 +737,27 @@ body {
   line-height: 1.25;
   color: var(--text-1);
 }
+/* Info MEMOS collapse: the subject is a tappable summary with a ▸/▾ marker; tap to expand the text. */
+.memo summary.memo-summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0;
+}
+.memo summary.memo-summary::-webkit-details-marker {
+  display: none;
+}
+.memo summary.memo-summary::before {
+  content: '▸';
+  flex-shrink: 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.memo[open] summary.memo-summary::before {
+  content: '▾';
+}
 
 /* ▶ Play button on a Claude voice-note card — hands the note to the persistent bar. */
 .card-play {
@@ -836,6 +857,28 @@ body {
   line-height: 1;
   cursor: pointer;
   padding: var(--s1) var(--s2);
+}
+.player-min-btn {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text-2);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: var(--s1) var(--s2);
+}
+/* Reserve room so the fixed player bar never covers the composer or the last card (her bug: "the
+   audio strip covers the writing area"). --player-h is the measured bar height, set in JS. */
+body.player-open .screen {
+  padding-bottom: calc(var(--player-h, 0px) + var(--s3));
+}
+body.player-open .composer {
+  bottom: var(--player-h, 0px);
+}
+/* Minimized: hide the scrubber row → a slim now-playing strip; the audio element keeps playing. */
+body.player-min .player-controls {
+  display: none;
 }
 
 /* v22: by-session dropdown + group dividers on the Voice/Info tabs (organize by session). */

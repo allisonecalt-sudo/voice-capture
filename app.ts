@@ -65,10 +65,10 @@ const SHARE_ITEM_KEY = 'shared-audio';
 
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v23';
+const APP_VERSION = 'v24';
 // Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
 // rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
-const BUILD_DATE = 'Jul 1, 2026 · 11:51am JDT';
+const BUILD_DATE = 'Jul 1, 2026 · 12:18pm JDT';
 
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
@@ -647,6 +647,7 @@ interface LogRow {
   remote: boolean; // from the server inbox (read-only) vs the local buffer (deletable)
   fromClaude?: boolean; // a Claude-pushed "Note from Claude" (vs one of her own captures)
   title?: string | null; // the session SUBJECT, shown as a bold header on Claude notes
+  sessionId?: string | null; // v23: the session's stable slug — stamped onto her reply so it routes back
   sessionLabel?: string | null; // v22: which session sent it — groups + filters the Voice/Info tabs
   audioUrl?: string | null; // voice-note she can play (Claude notes only)
   listened?: boolean; // has she heard this Claude note yet
@@ -698,6 +699,7 @@ function buildLogRows(): LogRow[] {
       remote: true,
       fromClaude: r.from_claude === true,
       title: r.title ?? null,
+      sessionId: r.session_id ?? null,
       sessionLabel: r.session_label ?? null,
       audioUrl: r.audio_url ?? null,
       listened: r.listened === true,
@@ -1192,17 +1194,11 @@ function renderClaudeCard(it: LogRow): string {
   const reply = `<button class="btn-text reply-btn" data-id="${escapeHtml(
     it.id
   )}" data-snippet="${escapeHtml(truncate(it.transcript, REPLY_SNIPPET_MAX))}">🎙️ Reply</button>`;
-  return `
-    <li class="log-card claude-card${it.listened ? ' is-listened' : ' is-unlistened'}" data-card-id="${escapeHtml(
-      it.id
-    )}">
-      <p class="claude-subject" dir="auto">${escapeHtml(subject)}</p>
-      <p class="claude-context">${
-        it.audioUrl ? '🎧 Voice note' : '📝 Memo'
-      } from Claude · ${escapeHtml(absoluteTime(it.createdAt))}</p>
-      ${player}
-      ${body ? `<p class="log-text" dir="auto">${escapeHtml(body)}</p>` : ''}
-      <div class="log-meta">
+  const contextLine = `<p class="claude-context">${
+    it.audioUrl ? '🎧 Voice note' : '📝 Memo'
+  } from Claude · ${escapeHtml(absoluteTime(it.createdAt))}</p>`;
+  const bodyHtml = body ? `<p class="log-text" dir="auto">${escapeHtml(body)}</p>` : '';
+  const meta = `<div class="log-meta">
         ${listened}
         <span class="log-card-actions">
           ${reply}
@@ -1213,7 +1209,29 @@ function renderClaudeCard(it: LogRow): string {
             it.id
           )}" aria-label="Archive">🗑</button>
         </span>
-      </div>
+      </div>`;
+  const cardOpen = `<li class="log-card claude-card${
+    it.listened ? ' is-listened' : ' is-unlistened'
+  }" data-card-id="${escapeHtml(it.id)}">`;
+  // MEMOS (Info — no audio) collapse under a tappable title: just the subject shows, tap to expand the
+  // text (her ask: "make the info memo with title I can click to expand"). Voice notes keep their
+  // always-visible layout with the ▶ Play button.
+  if (it.fromClaude && !it.audioUrl) {
+    return `${cardOpen}
+      <details class="memo">
+        <summary class="claude-subject memo-summary" dir="auto">${escapeHtml(subject)}</summary>
+        ${contextLine}
+        ${bodyHtml}
+      </details>
+      ${meta}
+    </li>`;
+  }
+  return `${cardOpen}
+      <p class="claude-subject" dir="auto">${escapeHtml(subject)}</p>
+      ${contextLine}
+      ${player}
+      ${bodyHtml}
+      ${meta}
     </li>`;
 }
 
@@ -1986,6 +2004,10 @@ function playNote(id: string, url: string, subject: string): void {
     pendingResume = 0; // same note still loaded → keep its live position, don't rewind
   }
   bar.hidden = false;
+  // Reserve room so the fixed bar doesn't cover the composer/last card — her bug: "I can't reply
+  // while listening because the audio strip covers the writing area." Measure the bar + lift content.
+  document.body.classList.add('player-open');
+  document.documentElement.style.setProperty('--player-h', `${bar.offsetHeight}px`);
   audio.playbackRate = getSpeed();
   void audio.play().catch(() => {
     /* a gesture/autoplay hiccup — the native controls in the bar still work */
@@ -2015,6 +2037,8 @@ function stopPlayer(): void {
     audio.load();
   }
   if (bar) bar.hidden = true;
+  document.body.classList.remove('player-open', 'player-min');
+  document.documentElement.style.setProperty('--player-h', '0px');
   currentNoteId = null;
   state.playingId = null;
   updatePlayButtonsInDom();
@@ -2081,6 +2105,15 @@ function wirePlayerBar(): void {
   document.getElementById('player-fwd')?.addEventListener('click', () => {
     const end = audio.duration || audio.currentTime + 10;
     audio.currentTime = Math.min(end, audio.currentTime + 10);
+  });
+  // Minimize — collapse the bar to a slim strip (audio keeps playing) so it's out of the way, then
+  // re-measure the reserved room so the composer/list sit right against the smaller bar.
+  document.getElementById('player-min')?.addEventListener('click', () => {
+    const bar = document.getElementById('player-bar');
+    const minBtn = document.getElementById('player-min');
+    const min = document.body.classList.toggle('player-min');
+    if (minBtn) minBtn.innerHTML = min ? '&#9652;' : '&#9662;'; // ▴ expand / ▾ minimize
+    if (bar) document.documentElement.style.setProperty('--player-h', `${bar.offsetHeight}px`);
   });
   closeBtn?.addEventListener('click', stopPlayer);
   if (speedBtn) speedBtn.textContent = speedLabel(getSpeed());
