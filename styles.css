@@ -766,8 +766,8 @@ body {
   bottom: 0;
   z-index: 50;
   display: flex;
-  align-items: center;
-  gap: var(--s3);
+  flex-direction: column;
+  gap: var(--s2);
   padding: var(--s2) var(--s3);
   padding-bottom: calc(var(--s2) + env(safe-area-inset-bottom));
   background: var(--surface-2);
@@ -777,14 +777,14 @@ body {
 .player-bar[hidden] {
   display: none;
 }
-.player-main {
-  flex: 1;
-  min-width: 0;
+.player-top {
   display: flex;
-  flex-direction: column;
-  gap: var(--s1);
+  align-items: center;
+  gap: var(--s2);
 }
 .player-subject {
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   font-weight: 700;
   color: var(--text-1);
@@ -792,21 +792,29 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* The audio scrubber gets the FULL width of its own row so play/pause/seek are easy to hit. */
 .player-audio {
   width: 100%;
-  height: 34px;
+  height: 40px;
 }
-.player-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
+/* Speed button — a clear, tappable control (not a hidden native menu). */
+#player-speed.speed-btn {
   flex-shrink: 0;
+  min-width: 52px;
+  padding: var(--s2) var(--s3);
+  font-size: 15px;
+  font-weight: 700;
+  background: var(--surface-1);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  color: var(--accent);
 }
 .player-close {
+  flex-shrink: 0;
   background: none;
   border: none;
   color: var(--text-2);
-  font-size: 18px;
+  font-size: 20px;
   line-height: 1;
   cursor: pointer;
   padding: var(--s1) var(--s2);

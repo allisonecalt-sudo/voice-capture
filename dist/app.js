@@ -39,10 +39,10 @@ const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v20';
+const APP_VERSION = 'v21';
 // Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
 // rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
-const BUILD_DATE = 'Jul 1, 2026 · 10:51am';
+const BUILD_DATE = 'Jul 1, 2026 · 11:26am';
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
 const SPEED_STEPS = [1, 1.25, 1.5, 2, 0.75];
@@ -1686,7 +1686,15 @@ function wirePlayerBar() {
     if (!audio)
         return; // bar absent (e.g. a test harness without the shell) — no-op
     playerWired = true;
+    // Re-assert the remembered speed whenever the media (re)loads or starts. Browsers reset
+    // playbackRate to 1 when a new src loads, which was silently wiping her speed choice ("I can't
+    // control the speed"). Applying it on loadedmetadata + play makes the speed actually stick.
+    const applyRate = () => {
+        audio.playbackRate = getSpeed();
+    };
+    audio.addEventListener('loadedmetadata', applyRate);
     audio.addEventListener('play', () => {
+        applyRate();
         if (currentNoteId)
             state.playingId = currentNoteId;
         updatePlayButtonsInDom();

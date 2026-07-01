@@ -41,11 +41,8 @@
       plays a Claude voice note.
     -->
     <div id="player-bar" class="player-bar" hidden>
-      <div class="player-main">
+      <div class="player-top">
         <span class="player-subject" id="player-subject" dir="auto"></span>
-        <audio id="player-audio" class="player-audio" controls preload="none"></audio>
-      </div>
-      <div class="player-actions">
         <button type="button" class="speed-btn" id="player-speed" aria-label="Playback speed">
           1&times;
         </button>
@@ -53,6 +50,7 @@
           &times;
         </button>
       </div>
+      <audio id="player-audio" class="player-audio" controls preload="none"></audio>
     </div>
     <script type="module" src="dist/app.js"></script>
     <script>

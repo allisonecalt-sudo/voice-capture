@@ -117,6 +117,10 @@ export interface RemoteCapture {
   // `title` = the session SUBJECT, shown as a bold header on every note so she always knows which
   // session/topic a note is about (her rule: "every voice note needs the subject attached").
   title?: string | null;
+  // v21: which Claude session sent this note — `session_id` is a stable slug, `session_label` the
+  // friendly header the app groups by ("Voice-capture build"). Lets her filter/organize by session.
+  session_id?: string | null;
+  session_label?: string | null;
   from_claude?: boolean;
   audio_url?: string | null;
   listened?: boolean;
