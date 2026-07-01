@@ -39,7 +39,7 @@ const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v18';
+const APP_VERSION = 'v19';
 // Last-edited date shown next to the version (e.g. "v9 · Jun 18, 2026"). Update with APP_VERSION.
 const BUILD_DATE = 'Jul 1, 2026';
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
@@ -69,6 +69,7 @@ const state = {
     segment: null,
     replyContext: null,
     pendingUndo: null,
+    pendingOpenNote: null,
 };
 // ── Key storage (localStorage only, device-only) ─────────────────────────────
 function getKey() {
@@ -607,6 +608,8 @@ async function refreshRemoteLog() {
         pruneSyncedLocal();
         if (state.screen === 'log')
             render();
+        // If a notification deep-link is waiting on this note, the inbox now has it → open + scroll to it.
+        tryOpenPendingNote();
     }
     catch (err) {
         console.warn('[brain-dump] inbox read failed:', err);
@@ -652,6 +655,7 @@ function render() {
             next.scrollTop = prevScroll;
     }
     lastRenderedScreen = state.screen;
+    rememberView(); // persist screen+segment so a reload returns her here
 }
 function errorBanner() {
     return state.error ? `<p class="error-banner" role="alert">${escapeHtml(state.error)}</p>` : '';
@@ -1570,7 +1574,87 @@ function relativeTime(iso) {
         return `${diffDay}d ago`;
     return new Date(then).toLocaleDateString();
 }
+// ── v19: notification deep-link + remember-last-view ─────────────────────────
+const LAST_VIEW_KEY = 'last-view';
+/** Remember the current screen + segment so a reload returns her there instead of bouncing to the
+ *  compose screen. Her feedback: "when I click refresh I want it to stay on Voice, not the main
+ *  screen." Only the Log's landing spot is worth restoring; transient screens aren't persisted. */
+function rememberView() {
+    try {
+        if (state.screen === 'log' || state.screen === 'compose') {
+            localStorage.setItem(LAST_VIEW_KEY, JSON.stringify({ screen: state.screen, segment: state.segment }));
+        }
+    }
+    catch {
+        /* storage unavailable — non-fatal */
+    }
+}
+/** On boot, restore the last screen/segment so a refresh keeps her where she was. */
+function restoreLastView() {
+    try {
+        const raw = localStorage.getItem(LAST_VIEW_KEY);
+        if (!raw)
+            return;
+        const v = JSON.parse(raw);
+        if (v.screen === 'log') {
+            state.screen = 'log';
+            if (v.segment === 'mine' || v.segment === 'voice' || v.segment === 'info') {
+                state.segment = v.segment;
+            }
+        }
+    }
+    catch {
+        /* malformed — ignore */
+    }
+}
+/** Read a ?note=<id> deep link (a notification tap that cold-started the app): open the Log and queue
+ *  the note to scroll to once the inbox lands. Strips the param so a later refresh won't re-fire. */
+function handleNoteDeepLink() {
+    const id = new URLSearchParams(location.search).get('note');
+    if (!id)
+        return;
+    history.replaceState(null, '', location.pathname);
+    state.screen = 'log';
+    state.pendingOpenNote = id;
+}
+/** Open + scroll to a specific note (from a notification). Switches to the note's segment, scrolls the
+ *  card into view, and flashes it. Stays queued (no-op) until the inbox read actually has the note. */
+function tryOpenPendingNote() {
+    const id = state.pendingOpenNote;
+    if (!id)
+        return;
+    const note = buildLogRows().find((r) => r.id === id);
+    if (!note)
+        return; // inbox not loaded yet (or archived) — a later read retries
+    state.screen = 'log';
+    const seg = segmentOf(note);
+    if (state.segment !== seg || state.screen !== lastRenderedScreen) {
+        state.segment = seg;
+        render(); // rebuild on the right tab so the card is in the DOM
+    }
+    const card = document.querySelector(`.claude-card[data-card-id="${CSS.escape(id)}"]`);
+    if (!card)
+        return; // still not rendered — leave it queued
+    card.scrollIntoView({ block: 'center' });
+    card.classList.add('note-flash');
+    window.setTimeout(() => card.classList.remove('note-flash'), 1800);
+    state.pendingOpenNote = null;
+}
+// Live "open this note" when the app is ALREADY running and she taps a notification (SW postMessage).
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', (event) => {
+        const data = event.data;
+        if (data?.type === 'open-note' && data.id) {
+            state.pendingOpenNote = data.id;
+            state.screen = 'log';
+            render();
+            tryOpenPendingNote();
+        }
+    });
+}
 // ── Boot ─────────────────────────────────────────────────────────────────────
+restoreLastView(); // a refresh keeps her on the tab she was on...
+handleNoteDeepLink(); // ...unless a notification deep-link says open a specific note.
 render();
 // If opened by a Web Share (a WhatsApp voice note shared in), pick it up and transcribe.
 void ingestSharedAudio();

@@ -716,6 +716,18 @@ body {
   border-left-color: var(--border);
   opacity: 0.62;
 }
+/* A note opened from a notification tap flashes briefly so she sees which one she landed on. */
+.claude-card.note-flash {
+  animation: note-flash 1.8s ease-out;
+}
+@keyframes note-flash {
+  0% {
+    box-shadow: 0 0 0 3px var(--accent);
+  }
+  100% {
+    box-shadow: 0 0 0 3px transparent;
+  }
+}
 /* The session SUBJECT — a bold header so she always knows which session/topic a note is about
    ("every voice note needs the subject attached"). */
 .claude-subject {

@@ -30,6 +30,7 @@ import * as webpush from 'jsr:@negrel/webpush';
 
 interface VoiceCaptureRow {
   id: string;
+  title: string | null;
   transcript: string | null;
   from_claude: boolean | null;
   audio_url: string | null;
@@ -130,13 +131,21 @@ Deno.serve(async (req: Request): Promise<Response> => {
   });
 
   const isVoice = !!row.audio_url;
+  const subject = (row.title ?? '').trim();
+  const kind = isVoice ? 'Voice note' : 'Memo';
   const notification = {
-    title: 'A new note from Claude',
-    body: isVoice
-      ? 'A voice note is waiting — whenever you want it, no rush.'
-      : 'Claude left you a note — whenever you want it, no rush.',
-    tag: 'note-from-claude',
-    url: './index.html',
+    // Lead with the SUBJECT so she knows which session/topic just arrived (her ask: "notifications
+    // should tell me which thing came in"). Fall back to the gentle generic copy when there's no title.
+    title: subject || 'A new note from Claude',
+    body: subject
+      ? `${kind} from Claude · tap to open it`
+      : isVoice
+        ? 'A voice note is waiting — whenever you want it, no rush.'
+        : 'Claude left you a note — whenever you want it, no rush.',
+    // Per-note tag so distinct notes don't coalesce into one — she wants to see each subject.
+    tag: `note-${row.id}`,
+    // Deep-link straight to THIS note (her ask: "tapping takes me right to it").
+    url: `./index.html?note=${row.id}`,
   };
   const message = new TextEncoder().encode(JSON.stringify(notification));
 

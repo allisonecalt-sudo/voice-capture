@@ -13,7 +13,7 @@
 // BUILT:  install/activate/fetch with the two strategies above + handleShareTarget().
 // NEXT:   bump VERSION when shipping a new build.
 
-const VERSION = 'voice-capture-v18';
+const VERSION = 'voice-capture-v19';
 const SHELL_CACHE = `${VERSION}-shell`;
 
 // Web Share Target hand-off cache. When a voice note is shared INTO the app (Android:
@@ -109,12 +109,20 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const target = (event.notification.data && event.notification.data.url) || './index.html';
   const targetUrl = new URL(target, self.registration.scope).href;
+  const noteId = new URL(targetUrl).searchParams.get('note');
   event.waitUntil(
     (async () => {
       const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
       for (const client of all) {
-        if ('focus' in client) return client.focus();
+        if ('focus' in client) {
+          await client.focus();
+          // The app may already be running (past boot), so the URL param alone won't fire — tell it
+          // live which note to open so it switches to the right tab + scrolls to that card.
+          if (noteId) client.postMessage({ type: 'open-note', id: noteId });
+          return;
+        }
       }
+      // No window open → cold-start at the deep link; the app reads ?note= on boot.
       if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
     })()
   );
