@@ -707,13 +707,15 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
     await expect(page.locator('.seg')).toHaveCount(3);
     // Default-lands on Voice (it has the unheard voice note); only voice1 shows.
     await expect(page.locator('.seg[data-seg="voice"]')).toHaveClass(/is-active/);
-    await expect(page.locator('.log-text', { hasText: 'your eval-day plan' })).toBeVisible();
-    await expect(page.locator('.log-text', { hasText: 'מכונים list' })).toHaveCount(0);
+    // Claude note content shows on the card (the subject header derives from the first line when
+    // there's no explicit title), so assert against .claude-card, not the .log-text body.
+    await expect(page.locator('.claude-card', { hasText: 'your eval-day plan' })).toBeVisible();
+    await expect(page.locator('.claude-card', { hasText: 'מכונים list' })).toHaveCount(0);
     await expect(page.locator('.log-text', { hasText: 'my own captured thought' })).toHaveCount(0);
 
     // Switch to Info → only the written memo (no audio player).
     await page.locator('.seg[data-seg="info"]').click();
-    await expect(page.locator('.log-text', { hasText: 'מכונים list' })).toBeVisible();
+    await expect(page.locator('.claude-card', { hasText: 'מכונים list' })).toBeVisible();
     await expect(page.locator('audio.claude-audio')).toHaveCount(0);
     await expect(page.locator('.log-text', { hasText: 'your eval-day plan' })).toHaveCount(0);
 
@@ -781,7 +783,7 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
     await page.locator('#log-back').click();
     await page.locator('#open-log').click();
     await expect(page.locator('.seg[data-seg="voice"]')).toHaveClass(/is-active/);
-    await expect(page.locator('.log-text', { hasText: 'just arrived' })).toBeVisible();
+    await expect(page.locator('.claude-card', { hasText: 'just arrived' })).toBeVisible();
   });
 
   test('auto-mark on audio "ended" flips the note to listened', async ({ page }) => {
@@ -915,34 +917,76 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
     await expect(page.locator('.reply-tag')).toContainText('re: Voice note: your eval-day plan');
   });
 
-  test('listened Claude notes dim + sink below unheard ones', async ({ page }) => {
+  test('listened Claude notes dim in place — they keep chronological order, never sink', async ({
+    page,
+  }) => {
+    // A NEWER note she already heard + an OLDER note she hasn't. Under the old "sink listened to the
+    // bottom" rule the newer-heard note would drop below the older-unheard one. Her feedback killed
+    // that (a note must not move when she plays/marks it): order is stable newest-first, and listened
+    // just dims where it sits. So the newer-heard note stays ON TOP, dimmed.
     const twoVoice = [
       {
-        id: 'unheardV',
-        transcript: 'newer unheard voice note',
+        id: 'heardNewer',
+        transcript: 'newer already-heard voice note',
         source: 'text',
         created_at: new Date(Date.now() - 5_000).toISOString(),
         from_claude: true,
-        audio_url: 'https://x/storage/v1/object/public/voice-notes/unheardV.mp3',
-        listened: false,
+        audio_url: 'https://x/storage/v1/object/public/voice-notes/heardNewer.mp3',
+        listened: true,
       },
       {
-        id: 'heardV',
-        transcript: 'older already-heard voice note',
+        id: 'unheardOlder',
+        transcript: 'older unheard voice note',
         source: 'text',
         created_at: new Date(Date.now() - 50_000).toISOString(),
         from_claude: true,
-        audio_url: 'https://x/storage/v1/object/public/voice-notes/heardV.mp3',
-        listened: true,
+        audio_url: 'https://x/storage/v1/object/public/voice-notes/unheardOlder.mp3',
+        listened: false,
       },
     ];
     await seedLoggedIn(page, twoVoice);
     await expect(page.locator('.seg[data-seg="voice"]')).toHaveClass(/is-active/);
     const cards = page.locator('.claude-card');
     await expect(cards).toHaveCount(2);
-    // Unheard sorts first even though it isn't the very newest-by-rule; listened sinks + dims.
-    await expect(cards.nth(0)).toHaveClass(/is-unlistened/);
-    await expect(cards.nth(1)).toHaveClass(/is-listened/);
+    // Newest-first is preserved: the newer (heard) note stays first and dims; it does NOT sink.
+    await expect(cards.nth(0)).toHaveClass(/is-listened/);
+    await expect(cards.nth(1)).toHaveClass(/is-unlistened/);
+  });
+
+  test('every Claude note shows its subject as a header (explicit title, else the first line)', async ({
+    page,
+  }) => {
+    const notes = [
+      {
+        id: 'withTitle',
+        title: 'Push notifications',
+        transcript: 'They are live now.',
+        source: 'text',
+        created_at: new Date(Date.now() - 5_000).toISOString(),
+        from_claude: true,
+        audio_url: 'https://x/storage/v1/object/public/voice-notes/withTitle.mp3',
+        listened: false,
+      },
+      {
+        id: 'noTitle',
+        transcript: 'Subject from first line\nand the body below',
+        source: 'text',
+        created_at: new Date(Date.now() - 50_000).toISOString(),
+        from_claude: true,
+        audio_url: 'https://x/storage/v1/object/public/voice-notes/noTitle.mp3',
+        listened: false,
+      },
+    ];
+    await seedLoggedIn(page, notes);
+    await expect(page.locator('.seg[data-seg="voice"]')).toHaveClass(/is-active/);
+    // Explicit title → subject = title, body = the transcript.
+    const c1 = page.locator('.claude-card', { hasText: 'Push notifications' });
+    await expect(c1.locator('.claude-subject')).toHaveText('Push notifications');
+    await expect(c1.locator('.log-text')).toHaveText('They are live now.');
+    // No title → subject derives from the first line, body is the remainder (no duplication).
+    const c2 = page.locator('.claude-card', { hasText: 'Subject from first line' });
+    await expect(c2.locator('.claude-subject')).toHaveText('Subject from first line');
+    await expect(c2.locator('.log-text')).toHaveText('and the body below');
   });
 });
 

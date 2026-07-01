@@ -711,10 +711,19 @@ body {
   border-radius: 50%;
   background: var(--accent);
 }
-/* Listened: dimmed + a muted edge (it has sunk to the bottom of its segment). */
+/* Listened: dimmed + a muted edge (dims in place — it keeps its position, never moves). */
 .claude-card.is-listened {
   border-left-color: var(--border);
   opacity: 0.62;
+}
+/* The session SUBJECT — a bold header so she always knows which session/topic a note is about
+   ("every voice note needs the subject attached"). */
+.claude-subject {
+  margin: 0 0 var(--s1);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--text-1);
 }
 .claude-context {
   margin: 0 0 var(--s2);

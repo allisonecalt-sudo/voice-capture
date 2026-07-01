@@ -114,6 +114,9 @@ export interface RemoteCapture {
   created_at: string;
   // "Notes from Claude" extras (Claude-pushed rows): a voice-note URL she can play, a flag that
   // splits these from her own captures, and the have-I-heard-it state (shown as "✓ Listened").
+  // `title` = the session SUBJECT, shown as a bold header on every note so she always knows which
+  // session/topic a note is about (her rule: "every voice note needs the subject attached").
+  title?: string | null;
   from_claude?: boolean;
   audio_url?: string | null;
   listened?: boolean;

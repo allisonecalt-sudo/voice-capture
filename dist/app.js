@@ -39,7 +39,7 @@ const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v17';
+const APP_VERSION = 'v18';
 // Last-edited date shown next to the version (e.g. "v9 · Jun 18, 2026"). Update with APP_VERSION.
 const BUILD_DATE = 'Jul 1, 2026';
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
@@ -575,6 +575,7 @@ function buildLogRows() {
             source: r.source,
             remote: true,
             fromClaude: r.from_claude === true,
+            title: r.title ?? null,
             audioUrl: r.audio_url ?? null,
             listened: r.listened === true,
             replySnippet: r.reply_snippet ?? null,
@@ -618,8 +619,15 @@ function root() {
         throw new Error('#app mount point missing');
     return el;
 }
+let lastRenderedScreen = null;
 function render() {
     const el = root();
+    // Preserve scroll across a SAME-screen re-render (archive/copy/etc. in the Log). The innerHTML swap
+    // rebuilds the scrolling `.screen` element, which would otherwise snap back to the top — her
+    // feedback: "every time I delete it scrolls to the top, that's annoying." Capture the current
+    // scroll, then restore it onto the freshly-built element after wiring.
+    const sameScreen = state.screen === lastRenderedScreen;
+    const prevScroll = sameScreen ? (el.querySelector('.screen')?.scrollTop ?? 0) : 0;
     switch (state.screen) {
         case 'compose':
             el.innerHTML = renderCompose();
@@ -638,6 +646,12 @@ function render() {
             break;
     }
     wireScreen();
+    if (sameScreen && prevScroll > 0) {
+        const next = el.querySelector('.screen');
+        if (next)
+            next.scrollTop = prevScroll;
+    }
+    lastRenderedScreen = state.screen;
 }
 function errorBanner() {
     return state.error ? `<p class="error-banner" role="alert">${escapeHtml(state.error)}</p>` : '';
@@ -726,12 +740,14 @@ function segmentOf(it) {
         return 'mine';
     return it.audioUrl ? 'voice' : 'info';
 }
-/** Rows for one segment, with listened/checked items SUNK to the bottom (dim + done, not gone). */
+/** Rows for one segment, in STABLE newest-first order (as built). Listened items are NOT reordered —
+ *  they dim in place (via the is-listened class) so a note never jumps or "disappears" the moment she
+ *  plays / marks it. (Her feedback: "if I click mark as listened I don't know where it is, it's
+ *  confusing"; "I don't want this to move to the end.") What's new still surfaces: newest is at top,
+ *  the segmented control lands her on the tab that has unheard items, and unheard cards carry the
+ *  accent — none of which requires shuffling the list under her. */
 function rowsForSegment(items, seg) {
-    const inSeg = items.filter((it) => segmentOf(it) === seg);
-    const unheard = inSeg.filter((it) => isUnheard(it));
-    const heard = inSeg.filter((it) => !isUnheard(it));
-    return [...unheard, ...heard];
+    return items.filter((it) => segmentOf(it) === seg);
 }
 /** "Unheard" = a Claude note she hasn't listened to yet. Her own notes are never "unheard" (the
  *  concept is about Claude reaching her), so Mine has no unheard count. */
@@ -893,11 +909,23 @@ function renderClaudeCard(it) {
         : `<button class="btn-text mark-listened" data-id="${escapeHtml(it.id)}">Mark as listened</button>`;
     // Reply (one level): records a voice/text note that lands threaded with reply_to + a snippet.
     const reply = `<button class="btn-text reply-btn" data-id="${escapeHtml(it.id)}" data-snippet="${escapeHtml(truncate(it.transcript, REPLY_SNIPPET_MAX))}">🎙️ Reply</button>`;
+    // Every note shows its SUBJECT as a bold header (her rule: "every voice note needs the subject
+    // attached"). Prefer the explicit `title` (the session subject); for older notes without one, derive
+    // it from the note's first line. The body shows the remaining text — with an explicit title the full
+    // transcript; without one, the lines after the subject (so the header isn't duplicated below), or
+    // the full text when it's a single long line (never drop content).
+    const rawTitle = (it.title ?? '').trim();
+    const lines = it.transcript.split('\n');
+    const firstLine = (lines[0] ?? '').trim();
+    const rest = lines.slice(1).join('\n').trim();
+    const subject = rawTitle || truncate(firstLine, 70);
+    const body = rawTitle ? it.transcript : rest || (firstLine.length > 70 ? it.transcript : '');
     return `
     <li class="log-card claude-card${it.listened ? ' is-listened' : ' is-unlistened'}" data-card-id="${escapeHtml(it.id)}">
+      <p class="claude-subject" dir="auto">${escapeHtml(subject)}</p>
       <p class="claude-context">${it.audioUrl ? '🎧 Voice note' : '📝 Memo'} from Claude · ${escapeHtml(absoluteTime(it.createdAt))}</p>
       ${player}
-      <p class="log-text" dir="auto">${escapeHtml(it.transcript)}</p>
+      ${body ? `<p class="log-text" dir="auto">${escapeHtml(body)}</p>` : ''}
       <div class="log-meta">
         ${listened}
         <span class="log-card-actions">
@@ -1275,7 +1303,10 @@ function wireLog() {
             buzz();
         });
     });
-    // Notes from Claude — "Mark as listened" → persist + re-render (swaps the button for the badge).
+    // Notes from Claude — "Mark as listened" → persist + re-render (so the unheard count/badge/header
+    // update too). This is safe now: the list is STABLE-ordered (the card no longer sinks/moves) and
+    // render() preserves scroll — so the card just dims in place while the counts stay correct. (Her
+    // earlier confusion — "I don't know where it went" — was the old sink-on-listen reorder, now gone.)
     document.querySelectorAll('.mark-listened').forEach((btn) => {
         btn.addEventListener('click', () => {
             const id = btn.dataset.id;
@@ -1393,7 +1424,7 @@ function markListenedInDom(id) {
     if (!card)
         return;
     card.classList.remove('is-unlistened');
-    card.classList.add('is-listened'); // dim now; it sinks to the bottom on the next natural re-render
+    card.classList.add('is-listened'); // dim in place — the card keeps its position (never sinks/moves)
     const btn = card.querySelector('.mark-listened');
     if (btn) {
         const badge = document.createElement('span');
