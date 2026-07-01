@@ -41,9 +41,11 @@ import {
 import {
   archiveCapture,
   fetchRemoteCaptures,
+  fetchSessionPresence,
   markListened,
   unarchiveCapture,
   type RemoteCapture,
+  type SessionPresence,
 } from './supabase.js';
 import { currentEmail, getToken, isLoggedIn, login, logout } from './auth.js';
 import { isPushSupported, pushPermission, subscribeToPush } from './push.js';
@@ -63,10 +65,10 @@ const SHARE_ITEM_KEY = 'shared-audio';
 
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v22';
+const APP_VERSION = 'v23';
 // Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
 // rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
-const BUILD_DATE = 'Jul 1, 2026 · 11:41am JDT';
+const BUILD_DATE = 'Jul 1, 2026 · 11:51am JDT';
 
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
@@ -652,6 +654,19 @@ interface LogRow {
 }
 
 let remoteCache: RemoteCapture[] | null = null; // last successful inbox read (null = none yet)
+let presenceCache: SessionPresence[] = []; // last session-presence read (which sessions are "listening")
+
+/** Session labels whose heartbeat is fresh (<90s) + watching — shown with a 🟢 "listening" dot so she
+ *  can see which sessions will actually read a reply. */
+function liveSessionLabels(): Set<string> {
+  const live = new Set<string>();
+  const now = Date.now();
+  for (const p of presenceCache) {
+    if (!p.watching || !p.session_label) continue;
+    if (now - Date.parse(p.last_seen_at) < 90_000) live.add(p.session_label.trim());
+  }
+  return live;
+}
 
 /** The list the Log renders: local-only when logged out / no inbox read yet, else inbox ∪ local.
  *  A row in its Undo window is held out so it stays hidden during the ~6s grace period (the row is
@@ -713,6 +728,12 @@ async function refreshRemoteLog(): Promise<void> {
     // The inbox read is now the source of truth for everything that's synced — drop local copies
     // of synced notes so every logged-in device shows the SAME shared list and filed notes vanish.
     pruneSyncedLocal();
+    // Best-effort: which sessions are live + listening (for the 🟢 dot). Never blocks the inbox.
+    try {
+      presenceCache = await fetchSessionPresence(token);
+    } catch {
+      /* presence is a nicety — ignore a failed read */
+    }
     if (state.screen === 'log') render();
     // If a notification deep-link is waiting on this note, the inbox now has it → open + scroll to it.
     tryOpenPendingNote();
@@ -918,10 +939,14 @@ function renderSessionDropdown(
   active: string | null
 ): string {
   const total = sessions.reduce((n, s) => n + s.count, 0);
+  const live = liveSessionLabels();
   const opt = (val: string, text: string, sel: boolean): string =>
     `<option value="${escapeHtml(val)}"${sel ? ' selected' : ''}>${escapeHtml(text)}</option>`;
   const opts = [opt('', `All sessions · ${total}`, !active)].concat(
-    sessions.map((s) => opt(s.key, `${s.label} · ${s.count}`, active === s.key))
+    // 🟢 = that session is live + reading her replies right now.
+    sessions.map((s) =>
+      opt(s.key, `${live.has(s.label) ? '🟢 ' : ''}${s.label} · ${s.count}`, active === s.key)
+    )
   );
   return `<label class="session-filter-wrap">
       <span class="session-filter-icon" aria-hidden="true">🗂️</span>
@@ -943,11 +968,13 @@ function renderGroupedCards(rows: LogRow[]): string {
       order.push(key);
     }
   }
+  const live = liveSessionLabels();
   return order
     .map((key) => {
       const groupRows = groups.get(key) as LogRow[];
       const label = key === EARLIER_KEY ? 'Earlier' : key;
-      const divider = `<li class="session-divider" role="presentation">${escapeHtml(label)} · ${groupRows.length}</li>`;
+      const dot = key !== EARLIER_KEY && live.has(label) ? '🟢 ' : '';
+      const divider = `<li class="session-divider" role="presentation">${dot}${escapeHtml(label)} · ${groupRows.length}</li>`;
       return divider + groupRows.map(renderLogCard).join('');
     })
     .join('');
@@ -1034,6 +1061,14 @@ function renderLog(): string {
   const sessionDropdown =
     isClaudeSeg && sessions.length >= 2 ? renderSessionDropdown(sessions, activeFilter) : '';
   const grouped = isClaudeSeg && !activeFilter && sessions.length >= 2;
+  // A "listening now" line so she can SEE which sessions are live + reading her replies (even with
+  // just one session, where the dropdown doesn't show). Her ask: "a way I know a session is connected
+  // and that it's reading replies."
+  const liveLabels = [...liveSessionLabels()];
+  const presenceLine =
+    isClaudeSeg && liveLabels.length
+      ? `<p class="presence-line">🟢 Listening now — ${liveLabels.map((l) => escapeHtml(l)).join(', ')}</p>`
+      : '';
   const hasLocal = loadHistory().length > 0;
   const syncState = isLoggedIn()
     ? `<p class="log-sync" id="log-sync">✓ Synced — your notes from every device</p>`
@@ -1073,6 +1108,7 @@ function renderLog(): string {
       ${renderSegmentedControl(items, activeSegment)}
       ${syncState}
       ${segmentHeader(items, activeSegment)}
+      ${presenceLine}
       ${sessionDropdown}
       ${toolsForSegment}
       ${list}

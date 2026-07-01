@@ -128,6 +128,14 @@ async function installMocks(
             { status: 200, headers: { 'Content-Type': 'application/json' } }
           );
         }
+        if (url.includes(host) && url.includes('session_presence')) {
+          // Session-presence read (which sessions are "listening") — empty by default so tests are
+          // deterministic and never depend on live heartbeats.
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
         if (url.includes(host) && url.includes('voice_captures')) {
           const method = (init?.method ?? 'GET').toUpperCase();
           if (method === 'GET') {

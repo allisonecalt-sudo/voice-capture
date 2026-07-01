@@ -877,6 +877,13 @@ body {
 .session-divider:first-child {
   margin-top: 0;
 }
+/* "🟢 Listening now" — which sessions are live + reading her replies. */
+.presence-line {
+  margin: 0 0 var(--s2);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
 .claude-context {
   margin: 0 0 var(--s2);
   font-size: 12px;

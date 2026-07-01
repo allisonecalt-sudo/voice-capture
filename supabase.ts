@@ -154,6 +154,28 @@ export async function fetchRemoteCaptures(token: string, limit = 200): Promise<R
   return Array.isArray(rows) ? rows : [];
 }
 
+const SESSION_PRESENCE_URL = SUPABASE_URL.replace('/voice_captures', '/session_presence');
+
+/** A Claude session's live-presence heartbeat — so the app can show which sessions are currently
+ *  "listening" for her replies (a green dot next to a session she's replying into). */
+export interface SessionPresence {
+  session_id: string;
+  session_label: string | null;
+  last_seen_at: string;
+  watching: boolean;
+}
+
+/** Read the session-presence heartbeats (authenticated). A session is "live" if its last_seen_at is
+ *  recent; the app decides the freshness window. Never throws fatally — presence is a nicety. */
+export async function fetchSessionPresence(token: string): Promise<SessionPresence[]> {
+  const res = await fetch(`${SESSION_PRESENCE_URL}?select=*`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`presence read failed: HTTP ${res.status}`);
+  const rows = (await res.json()) as SessionPresence[];
+  return Array.isArray(rows) ? rows : [];
+}
+
 /**
  * Mark one "Note from Claude" as listened (authenticated UPDATE). Anon is insert-only, so this
  * needs a login token — same surface as fetchRemoteCaptures. Sets `listened=true` + `listened_at`
