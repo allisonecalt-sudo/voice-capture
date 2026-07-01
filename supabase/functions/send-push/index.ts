@@ -10,8 +10,10 @@
 //       buzz her own phone.
 //
 // SECRETS (set via `supabase secrets set` — NEVER commit these):
-//   VAPID_PUBLIC_KEY   — the public key shipped in push.ts (kept here too for the webpush lib)
-//   VAPID_PRIVATE_KEY  — the PRIVATE half (secret; generated alongside the public key)
+//   VAPID_KEYS         — the ExportedVapidKeys JSON: {"publicKey":<JWK>,"privateKey":<JWK>}. This is
+//                        what @negrel/webpush importVapidKeys() expects (JWK objects, ONE JSON blob —
+//                        NOT two base64url strings). The matching client applicationServerKey (the
+//                        base64url public point in push.ts) is derived from the SAME keypair.
 //   VAPID_SUBJECT      — a mailto: or https: contact (e.g. mailto:allisonecalt@gmail.com)
 //   PUSH_WEBHOOK_SECRET — a long random string; the DB Webhook must send it as the
 //                         `x-webhook-secret` header. The function FAILS CLOSED (401) without it, so a
@@ -104,16 +106,27 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
   if (!subs || subs.length === 0) return json({ sent: 0, note: 'no subscriptions' });
 
-  // Build the VAPID application server from the secrets.
+  // Build the VAPID application server from the secrets. importVapidKeys() takes the ExportedVapidKeys
+  // shape ({publicKey: JWK, privateKey: JWK}) as ONE object — stored as the VAPID_KEYS JSON secret and
+  // parsed here. (Two separate base64url env strings do NOT work with this library.)
+  const vapidKeysJson = Deno.env.get('VAPID_KEYS');
+  if (!vapidKeysJson) {
+    console.error('[send-push] VAPID_KEYS secret is not set');
+    return json({ error: 'push not configured' }, 200); // 200 so the webhook isn't retried forever
+  }
+  let exportedVapidKeys: { publicKey: JsonWebKey; privateKey: JsonWebKey };
+  try {
+    exportedVapidKeys = JSON.parse(vapidKeysJson) as {
+      publicKey: JsonWebKey;
+      privateKey: JsonWebKey;
+    };
+  } catch {
+    console.error('[send-push] VAPID_KEYS is not valid JSON');
+    return json({ error: 'push misconfigured' }, 200);
+  }
   const appServer = await webpush.ApplicationServer.new({
     contactInformation: Deno.env.get('VAPID_SUBJECT') ?? 'mailto:allisonecalt@gmail.com',
-    vapidKeys: await webpush.importVapidKeys(
-      {
-        publicKey: Deno.env.get('VAPID_PUBLIC_KEY')!,
-        privateKey: Deno.env.get('VAPID_PRIVATE_KEY')!,
-      },
-      { extractable: false }
-    ),
+    vapidKeys: await webpush.importVapidKeys(exportedVapidKeys, { extractable: false }),
   });
 
   const isVoice = !!row.audio_url;

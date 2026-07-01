@@ -16,7 +16,7 @@
 import { SUPABASE_ANON_KEY } from './supabase.js';
 // The app's VAPID PUBLIC key (safe to commit — it's the public half of the keypair). The matching
 // PRIVATE key is an Edge Function secret, never stored here. Regenerate both together if rotated.
-export const VAPID_PUBLIC_KEY = 'BNsy1DewJLGlZKsjkr0JRhebiUm4dW_C_861phjW8fX4w6bxJoz75xx_8w1xggxWz-GZvuIoWTD1ow0E6xOD9uo';
+export const VAPID_PUBLIC_KEY = 'BEAmfVVYhxwC3TzQgmRWXqEnKnCs5Y57QTLIZoc2DqnLtB48Bo_kQCvUdc4PrOEgU7YdaLDr1IeCcc4Mz7q_FPk';
 const SUBSCRIPTIONS_URL = 'https://hpiyvnfhoqnnnotrmwaz.supabase.co/rest/v1/push_subscriptions';
 /** True when this browser can do Web Push at all (Android Chrome: yes). */
 export function isPushSupported() {
