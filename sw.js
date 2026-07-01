@@ -13,7 +13,7 @@
 // BUILT:  install/activate/fetch with the two strategies above + handleShareTarget().
 // NEXT:   bump VERSION when shipping a new build.
 
-const VERSION = 'voice-capture-v16';
+const VERSION = 'voice-capture-v17';
 const SHELL_CACHE = `${VERSION}-shell`;
 
 // Web Share Target hand-off cache. When a voice note is shared INTO the app (Android:

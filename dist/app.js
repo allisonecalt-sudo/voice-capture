@@ -39,7 +39,7 @@ const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v16';
+const APP_VERSION = 'v17';
 // Last-edited date shown next to the version (e.g. "v9 · Jun 18, 2026"). Update with APP_VERSION.
 const BUILD_DATE = 'Jul 1, 2026';
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the

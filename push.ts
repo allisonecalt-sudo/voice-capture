@@ -46,6 +46,19 @@ function urlBase64ToUint8Array(base64: string): ArrayBuffer {
   return buffer;
 }
 
+/** True when an existing push subscription was created with the given VAPID application server key.
+ *  A rotated/regenerated key makes the old subscription unusable by the current server keypair, so a
+ *  mismatch must trigger a re-subscribe rather than a silent reuse. */
+function applicationServerKeyMatches(sub: PushSubscription, expected: ArrayBuffer): boolean {
+  const actual = sub.options.applicationServerKey;
+  if (!actual) return false;
+  const a = new Uint8Array(actual);
+  const b = new Uint8Array(expected);
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 /** Read a subscription key (p256dh / auth) as URL-safe base64 for storage. */
 function keyToBase64(sub: PushSubscription, name: PushEncryptionKeyName): string {
   const key = sub.getKey(name);
@@ -71,12 +84,25 @@ export async function subscribeToPush(
     if (permission !== 'granted') return { ok: false, reason: 'denied' };
 
     const reg = await navigator.serviceWorker.ready;
-    const existing = await reg.pushManager.getSubscription();
+    const expectedKey = urlBase64ToUint8Array(VAPID_PUBLIC_KEY);
+    let existing = await reg.pushManager.getSubscription();
+    // Key-rotation guard: a subscription is bound to the VAPID key it was created with. If the key was
+    // regenerated (as it was for this build), reusing an old subscription would register a device the
+    // server can no longer sign pushes for — they'd silently never arrive. Detect the mismatch, drop
+    // the stale subscription, and make a fresh one with the current key.
+    if (existing && !applicationServerKeyMatches(existing, expectedKey)) {
+      try {
+        await existing.unsubscribe();
+      } catch {
+        /* ignore — a new subscription is created below regardless */
+      }
+      existing = null;
+    }
     const sub =
       existing ??
       (await reg.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+        applicationServerKey: expectedKey,
       }));
 
     const stored = await storeSubscription(sub, userEmail);
