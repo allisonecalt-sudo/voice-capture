@@ -39,13 +39,13 @@ const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v28';
+const APP_VERSION = 'v29';
 // Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
 // rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
-const BUILD_DATE = 'Jul 1, 2026 · 1:50pm JDT';
+const BUILD_DATE = 'Jul 2, 2026 · 8:50am JDT';
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
-const SPEED_STEPS = [1, 1.25, 1.5, 2, 0.75];
+const SPEED_STEPS = [1, 1.25, 1.5, 1.75, 2, 0.75];
 const SPEED_KEY = 'vc.playbackRate';
 // Set ONLY after a subscription row actually lands in Supabase — NOT on a bare permission grant.
 // "✓ Notifications on" reads off this, so a silent store failure can't latch a false "on" (it used
@@ -140,7 +140,7 @@ function setPushSubscribed(on) {
         // storage disabled — the card just falls back to the default "Notify me" CTA.
     }
 }
-/** The next rate in the cycle (wraps): 1× → 1.25× → 1.5× → 2× → 0.75× → 1× … */
+/** The next rate in the cycle (wraps): 1× → 1.25× → 1.5× → 1.75× → 2× → 0.75× → 1× … */
 function nextSpeed(rate) {
     const i = SPEED_STEPS.indexOf(rate);
     return SPEED_STEPS[(i + 1) % SPEED_STEPS.length];

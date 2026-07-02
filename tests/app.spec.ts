@@ -894,7 +894,7 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
     expect((row as { session_id?: string }).session_id).toBe('voice-capture-build-2026-07-01');
   });
 
-  test('the bar speed button cycles 1× → 1.25× → 1.5× → 2× → 0.75× and remembers it', async ({
+  test('the bar speed button cycles 1× → 1.25× → 1.5× → 1.75× → 2× → 0.75× and remembers it', async ({
     page,
   }) => {
     await seedLoggedIn(page);
@@ -906,6 +906,8 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
     await expect(speed).toHaveText('1.25×');
     await speed.click();
     await expect(speed).toHaveText('1.5×');
+    await speed.click();
+    await expect(speed).toHaveText('1.75×');
     await speed.click();
     await expect(speed).toHaveText('2×');
     await speed.click();
