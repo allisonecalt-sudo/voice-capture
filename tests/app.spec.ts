@@ -1042,15 +1042,68 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
       },
     ]);
     await expect(page.locator('.seg[data-seg="voice"]')).toHaveClass(/is-active/);
-    // With 2 sessions the dropdown appears and the list groups under one divider per session.
+    // v31: the LIST groups by DAY (both notes are from today → one "Today" divider); with 2
+    // sessions the dropdown still appears, and the session now rides on each card's context line.
     const dd = page.locator('#session-filter');
     await expect(dd).toBeVisible();
-    await expect(page.locator('.session-divider')).toHaveCount(2);
-    // Filter to one session → only its note shows, no dividers.
+    await expect(page.locator('.day-divider')).toHaveCount(1);
+    await expect(page.locator('.day-label')).toContainText('Today');
+    await expect(
+      page.locator('.claude-card', { hasText: 'Build note' }).locator('.claude-context')
+    ).toContainText('Voice-capture build');
+    // Filter to one session → only its note shows (still under its day divider).
     await dd.selectOption('Voice-capture build');
     await expect(page.locator('.claude-card')).toHaveCount(1);
     await expect(page.locator('.claude-card', { hasText: 'Build note' })).toBeVisible();
-    await expect(page.locator('.session-divider')).toHaveCount(0);
+  });
+
+  test('day "Clear" needs two taps, batch-archives the day, Undo restores it', async ({ page }) => {
+    await seedLoggedIn(page, [
+      {
+        id: 'd1',
+        title: 'Note one',
+        transcript: 'first note',
+        source: 'text',
+        created_at: new Date(Date.now() - 5_000).toISOString(),
+        from_claude: true,
+        audio_url: 'https://x/storage/v1/object/public/voice-notes/d1.mp3',
+        listened: true,
+        session_label: 'Session A',
+      },
+      {
+        id: 'd2',
+        title: 'Note two',
+        transcript: 'second note',
+        source: 'text',
+        created_at: new Date(Date.now() - 9_000).toISOString(),
+        from_claude: true,
+        audio_url: 'https://x/storage/v1/object/public/voice-notes/d2.mp3',
+        listened: false,
+        session_label: 'Session A',
+      },
+    ]);
+    await expect(page.locator('.seg[data-seg="voice"]')).toHaveClass(/is-active/);
+    const clear = page.locator('.day-clear');
+    await expect(clear).toHaveText('Clear');
+    // First tap ARMS (and names what's about to happen, unheard count included) — nothing archives.
+    await clear.click();
+    await expect(clear).toHaveText('Clear 2 · 1 unheard?');
+    await expect(page.locator('.claude-card')).toHaveCount(2);
+    // Second tap batch-archives the day: cards gone, Undo snackbar up, ONE PATCH archived=true.
+    await clear.click();
+    await expect(page.locator('.claude-card')).toHaveCount(0);
+    await expect(page.locator('#undo-snackbar')).toContainText('2 archived');
+    await expect
+      .poll(async () =>
+        (await patches(page)).some((p) => p.body?.archived === true && p.url.includes('in.('))
+      )
+      .toBe(true);
+    // Undo restores both (batch PATCH archived=false) and the cards come back.
+    await page.locator('#undo-archive').click();
+    await expect
+      .poll(async () => (await patches(page)).some((p) => p.body?.archived === false))
+      .toBe(true);
+    await expect(page.locator('.claude-card')).toHaveCount(2);
   });
 });
 

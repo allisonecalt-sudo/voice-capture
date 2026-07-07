@@ -153,3 +153,25 @@ export function archiveCapture(token, id) {
 export function unarchiveCapture(token, id) {
     return setArchived(token, id, false);
 }
+/**
+ * Batch form of setArchived — ONE PATCH for a whole day's rows (v31 "clear day"). UUIDs are
+ * URL-safe, so `id=in.(a,b,c)` needs no quoting/encoding. No-op on an empty list.
+ */
+export async function setArchivedMany(token, ids, archived) {
+    if (!ids.length)
+        return;
+    const url = `${SUPABASE_URL}?id=in.(${ids.join(',')})`;
+    const res = await fetch(url, {
+        method: 'PATCH',
+        headers: {
+            apikey: SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal',
+        },
+        body: JSON.stringify({ archived }),
+    });
+    if (!res.ok) {
+        throw new Error(`Supabase setArchivedMany failed: HTTP ${res.status}`);
+    }
+}

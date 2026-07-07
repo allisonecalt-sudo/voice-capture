@@ -434,11 +434,36 @@ body {
   color: var(--success);
   text-align: center;
 }
-.log-sync-cta {
-  display: block;
+/* v31 — logged-out is a BROKEN state (Claude notes can't load), so it announces itself: a real
+   banner, not a quiet link. One tap = the fix (log in). Accent, not danger — inviting, not scolding. */
+.logged-out-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
   width: 100%;
-  text-align: center;
-  color: var(--accent);
+  margin: 0 0 var(--s3);
+  padding: var(--s3) var(--s4);
+  background: var(--surface-1);
+  border: 1.5px solid var(--accent);
+  border-radius: var(--r-card);
+  color: var(--text-1);
+  font-family: var(--font);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+.logged-out-banner .banner-text {
+  flex: 1;
+  min-width: 0;
+  line-height: var(--lh);
+}
+.logged-out-banner .banner-action {
+  flex-shrink: 0;
+  padding: var(--s1) var(--s3);
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  border-radius: 999px;
 }
 
 /* ── Settings ────────────────────────────────────────────── */
@@ -910,19 +935,34 @@ body.player-min .player-controls {
   padding: var(--s1) 0;
   color-scheme: dark; /* native option list renders on a dark surface, not white-on-white */
 }
-.session-divider {
+/* v31 — DAY dividers (Today / Yesterday / Sun, Jul 5): label left, that day's one "Clear" right. */
+.day-divider {
   list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
   margin: var(--s3) 0 var(--s1);
   padding: var(--s1) 0;
+  border-bottom: 1px solid var(--border);
+}
+.day-divider:first-child {
+  margin-top: 0;
+}
+.day-label {
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.02em;
   color: var(--text-2);
   text-transform: uppercase;
-  border-bottom: 1px solid var(--border);
 }
-.session-divider:first-child {
-  margin-top: 0;
+.day-clear {
+  font-size: 12px;
+  padding: var(--s1) var(--s2);
+  color: var(--text-3);
+}
+.day-clear.is-armed {
+  color: var(--danger);
 }
 /* "🟢 Listening now" — which sessions are live + reading her replies. */
 .presence-line {

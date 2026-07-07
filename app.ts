@@ -43,7 +43,7 @@ import {
   fetchRemoteCaptures,
   fetchSessionPresence,
   markListened,
-  unarchiveCapture,
+  setArchivedMany,
   type CaptureSource,
   type RemoteCapture,
   type SessionPresence,
@@ -66,10 +66,10 @@ const SHARE_ITEM_KEY = 'shared-audio';
 
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v30';
+const APP_VERSION = 'v31';
 // Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
 // rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
-const BUILD_DATE = 'Jul 7, 2026 · 12:00pm JDT';
+const BUILD_DATE = 'Jul 7, 2026 · 12:35pm JDT';
 
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
@@ -113,9 +113,13 @@ interface AppState {
   // v15 — a reply she's recording: the parent Claude-note id + its snippet ride along on the next
   // capture so it lands threaded. Cleared after the capture saves (or she cancels).
   replyContext: { replyTo: string; replySnippet: string; sessionId?: string | null } | null;
-  // v15 — the row currently in its ~6s "Archived — Undo" window (so Undo can restore it). The row
-  // is already hidden from the list; this just keeps the snackbar + the restore handle alive.
-  pendingUndo: { id: string; remote: boolean } | null;
+  // v15 — the row(s) currently in the ~6s "Archived — Undo" window (so Undo can restore them). The
+  // rows are already hidden from the list; this keeps the snackbar + the restore handles alive.
+  // v31: ids is a LIST so "clear day" (batch archive) shares the exact same Undo path as a single 🗑.
+  pendingUndo: { ids: string[]; label: string } | null;
+  // v31 — which day-group's "Clear" is armed (two-tap guard, same pattern as confirmingClear).
+  // Holds the day key ('2026-07-07'), or null when nothing is armed.
+  confirmingClearDay: string | null;
   // v19 — a note to open + scroll to (from a notification tap / ?note= deep link). Held until the
   // inbox read lands and the card is in the DOM, then consumed by tryOpenPendingNote().
   pendingOpenNote: string | null;
@@ -143,6 +147,7 @@ const state: AppState = {
   segment: null,
   replyContext: null,
   pendingUndo: null,
+  confirmingClearDay: null,
   pendingOpenNote: null,
   playingId: null,
   sessionFilter: null,
@@ -718,8 +723,11 @@ function buildLogRows(): LogRow[] {
       (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)
     );
   }
-  // Hold out the row that's mid-Undo so it doesn't flicker back in before the PATCH commits.
-  if (state.pendingUndo) rows = rows.filter((r) => r.id !== state.pendingUndo?.id);
+  // Hold out rows that are mid-Undo so they don't flicker back in before the PATCH commits.
+  if (state.pendingUndo) {
+    const held = new Set(state.pendingUndo.ids);
+    rows = rows.filter((r) => !held.has(r.id));
+  }
   return rows;
 }
 
@@ -911,10 +919,11 @@ function rowsForSegment(items: LogRow[], seg: Segment): LogRow[] {
   return items.filter((it) => segmentOf(it) === seg);
 }
 
-// ── v22: organize the Claude tabs (Voice/Info) BY SESSION ────────────────────────────────────────
-// Her ask: "voice notes sorted by session" + "find a way to do that dropdown — it's too overwhelming
-// all in one place." Notes carry session_label; the Voice/Info tabs get a dropdown to filter to one
-// session, and when showing All they group under light dividers. A null session → an "Earlier" bucket.
+// ── v22: session dropdown · v31: the LIST groups by DAY ──────────────────────────────────────────
+// v22 kept ("voice notes sorted by session… that dropdown"): the Voice/Info tabs still filter to one
+// session. v31 ("hard to keep track of all the sections… maybe group by dates"): the list itself now
+// groups under DAY dividers — Today / Yesterday / Sun, Jul 5 — in every tab, and each day gets one
+// "Clear" that archives the whole day (Undo is the safety). Session moved from divider to card line.
 
 const EARLIER_KEY = '__earlier__';
 
@@ -966,12 +975,41 @@ function renderSessionDropdown(
     </label>`;
 }
 
-/** Render a segment's cards grouped under session dividers (newest session first). */
-function renderGroupedCards(rows: LogRow[]): string {
+/** Local calendar-day key ('2026-07-07') — HER day (device timezone), not the UTC date, so a note
+ *  at 1am never files under "yesterday". */
+function dayKeyFromDate(d: Date): string {
+  if (Number.isNaN(d.getTime())) return 'unknown';
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+
+function dayKeyOf(it: LogRow): string {
+  return dayKeyFromDate(new Date(it.createdAt));
+}
+
+/** Human day label: Today / Yesterday / "Sun, Jul 5" (+ year only when it's not this year). */
+function dayLabel(key: string): string {
+  const now = new Date();
+  const today = dayKeyFromDate(now);
+  const yest = dayKeyFromDate(new Date(now.getTime() - 86_400_000));
+  if (key === today) return 'Today';
+  if (key === yest) return 'Yesterday';
+  if (key === 'unknown') return 'Undated';
+  const d = new Date(`${key}T12:00:00`); // noon dodges any DST edge on the day boundary
+  const opts: Intl.DateTimeFormatOptions = { weekday: 'short', month: 'short', day: 'numeric' };
+  if (d.getFullYear() !== now.getFullYear()) opts.year = 'numeric';
+  return d.toLocaleDateString('en-US', opts);
+}
+
+/** Render a segment's cards grouped under DAY dividers (newest day first — rows arrive desc).
+ *  Each divider carries the one "Clear" for that day (two-tap armed → archives the day, Undo-able).
+ *  Only remote rows can be cleared; a day of purely-local unsent notes gets no Clear button. */
+function renderDayGroups(rows: LogRow[]): string {
   const order: string[] = [];
   const groups = new Map<string, LogRow[]>();
   for (const r of rows) {
-    const key = sessionKeyOf(r);
+    const key = dayKeyOf(r);
     const g = groups.get(key);
     if (g) {
       g.push(r);
@@ -980,13 +1018,27 @@ function renderGroupedCards(rows: LogRow[]): string {
       order.push(key);
     }
   }
-  const live = liveSessionLabels();
   return order
     .map((key) => {
       const groupRows = groups.get(key) as LogRow[];
-      const label = key === EARLIER_KEY ? 'Earlier' : key;
-      const dot = key !== EARLIER_KEY && live.has(label) ? '🟢 ' : '';
-      const divider = `<li class="session-divider" role="presentation">${dot}${escapeHtml(label)} · ${groupRows.length}</li>`;
+      const clearable = groupRows.filter((r) => r.remote);
+      const unheard = clearable.filter(isUnheard).length;
+      const armed = state.confirmingClearDay === key;
+      // Armed copy states what's about to happen — including unheard notes riding along — so the
+      // second tap is informed, not a surprise. Counts stated, never scolded.
+      const armedLabel =
+        unheard > 0
+          ? `Clear ${clearable.length} · ${unheard} unheard?`
+          : `Clear ${clearable.length}?`;
+      const clearBtn = clearable.length
+        ? `<button class="btn-text day-clear${armed ? ' is-armed' : ''}" data-day="${key}">${
+            armed ? armedLabel : 'Clear'
+          }</button>`
+        : '';
+      const divider = `<li class="day-divider" role="presentation">
+          <span class="day-label">${escapeHtml(dayLabel(key))} · ${groupRows.length}</span>
+          ${clearBtn}
+        </li>`;
       return divider + groupRows.map(renderLogCard).join('');
     })
     .join('');
@@ -1078,7 +1130,6 @@ function renderLog(): string {
   // The dropdown only earns its place with 2+ sessions; below that, one flat list is calmer.
   const sessionDropdown =
     isClaudeSeg && sessions.length >= 2 ? renderSessionDropdown(sessions, activeFilter) : '';
-  const grouped = isClaudeSeg && !activeFilter && sessions.length >= 2;
   // A "listening now" line so she can SEE which sessions are live + reading her replies (even with
   // just one session, where the dropdown doesn't show). Her ask: "a way I know a session is connected
   // and that it's reading replies."
@@ -1088,9 +1139,16 @@ function renderLog(): string {
       ? `<p class="presence-line">🟢 Listening now — ${liveLabels.map((l) => escapeHtml(l)).join(', ')}</p>`
       : '';
   const hasLocal = loadHistory().length > 0;
+  // Logged-out is a BROKEN state here, not a preference — Claude notes silently can't load. So it
+  // gets a real banner, not a quiet text link (her rule, Jul 7 2026: "you have to tell me if not
+  // logged in" — she lost a morning of notes to a silent session expiry). Fail-loud.
   const syncState = isLoggedIn()
     ? `<p class="log-sync" id="log-sync">✓ Synced — your notes from every device</p>`
-    : `<button class="btn-text log-sync-cta" id="log-login">↻ Log in to see notes from your other devices</button>`;
+    : `<button class="logged-out-banner" id="log-login">
+         <span class="banner-icon" aria-hidden="true">⚠️</span>
+         <span class="banner-text"><strong>You're logged out.</strong> Notes from Claude can't load.</span>
+         <span class="banner-action">Log in</span>
+       </button>`;
   // "Clear all" only clears THIS device's local buffer; gate it on local items existing.
   const tools = hasLocal
     ? `<div class="log-tools">
@@ -1101,16 +1159,22 @@ function renderLog(): string {
     : '';
   // The active segment renders as ONE list (unheard up top, listened dimmed + sunk below). Empty
   // states are gentle + segment-specific (anti-quit register — never "you missed", just calm).
+  // Logged out, the Claude tabs must NOT claim "no notes yet" — that's the lie that hid a whole
+  // morning of notes. Say what's actually true: can't load until she logs in.
   const emptyCopy: Record<Segment, string> = {
     mine: 'Nothing captured yet.',
     shared: 'Nothing shared in yet.',
-    voice: 'No voice notes from Claude yet.',
-    info: 'No memos from Claude yet.',
+    voice: isLoggedIn()
+      ? 'No voice notes from Claude yet.'
+      : 'Logged out — Claude notes can’t load. Tap the banner above to log in.',
+    info: isLoggedIn()
+      ? 'No memos from Claude yet.'
+      : 'Logged out — Claude memos can’t load. Tap the banner above to log in.',
   };
+  // v31: every tab groups under DAY dividers (Today / Yesterday / …) — one timeline, one "Clear"
+  // per day. Sessions are still reachable through the dropdown filter above.
   const list = segRows.length
-    ? `<ul class="log-list">${
-        grouped ? renderGroupedCards(segRows) : segRows.map(renderLogCard).join('')
-      }</ul>`
+    ? `<ul class="log-list">${renderDayGroups(segRows)}</ul>`
     : `<p class="log-empty">${emptyCopy[activeSegment]}</p>`;
   // Only "My Notes" can be cleared (her local buffer) — hide the tool on the Claude tabs.
   const toolsForSegment = activeSegment === 'mine' ? tools : '';
@@ -1141,7 +1205,7 @@ function renderLog(): string {
 function renderUndoSnackbar(): string {
   if (!state.pendingUndo) return '';
   return `<div class="undo-snackbar" id="undo-snackbar" role="status" aria-live="polite">
-      <span class="undo-text">Archived</span>
+      <span class="undo-text">${escapeHtml(state.pendingUndo.label)}</span>
       <button type="button" class="undo-btn" id="undo-archive">Undo</button>
     </div>`;
 }
@@ -1219,9 +1283,13 @@ function renderClaudeCard(it: LogRow): string {
   const reply = `<button class="btn-text reply-btn" data-id="${escapeHtml(it.id)}" data-session="${escapeHtml(
     it.sessionId ?? ''
   )}" data-snippet="${escapeHtml(truncate(it.transcript, REPLY_SNIPPET_MAX))}">🎙️ Reply</button>`;
+  // v31: the session rides on the card's context line (dividers now belong to DAYS). Truncated —
+  // it's a tag for orientation, not a headline.
+  const sessLabel = (it.sessionLabel ?? '').trim();
+  const sessionTag = sessLabel ? ` · 🗂️ ${escapeHtml(truncate(sessLabel, 28))}` : '';
   const contextLine = `<p class="claude-context">${
     it.audioUrl ? '🎧 Voice note' : '📝 Memo'
-  } from Claude · ${escapeHtml(absoluteTime(it.createdAt))}</p>`;
+  } from Claude · ${escapeHtml(absoluteTime(it.createdAt))}${sessionTag}</p>`;
   const bodyHtml = body ? `<p class="log-text" dir="auto">${escapeHtml(body)}</p>` : '';
   const meta = `<div class="log-meta">
         ${listened}
@@ -1597,6 +1665,21 @@ function wireLog(): void {
     });
   });
 
+  // v31 "Clear" on each day divider — two-tap guard (arm → confirm), then archive the whole day
+  // in one batch with the same Undo snackbar as a single 🗑. Arming a different day re-arms there.
+  document.querySelectorAll<HTMLButtonElement>('.day-clear').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const day = btn.dataset.day;
+      if (!day) return;
+      if (state.confirmingClearDay === day) {
+        void archiveDay(day);
+      } else {
+        state.confirmingClearDay = day;
+        render();
+      }
+    });
+  });
+
   // Archive (the visible 🗑 on every card). A REMOTE/synced row soft-archives (authenticated PATCH)
   // with an Undo snackbar; a local-only note that never reached the inbox is just dropped from the
   // device buffer (nothing to archive yet, no Undo needed).
@@ -1667,7 +1750,8 @@ async function archiveRow(id: string): Promise<void> {
   // If the note being archived is the one playing in the bar, stop it (it's leaving the inbox).
   if (state.playingId === id) stopPlayer();
   // Optimistically drop it from view + open the Undo window.
-  state.pendingUndo = { id, remote: true };
+  const pending = { ids: [id], label: 'Archived' };
+  state.pendingUndo = pending;
   if (state.copiedId === id) state.copiedId = null;
   render();
   buzz();
@@ -1680,23 +1764,52 @@ async function archiveRow(id: string): Promise<void> {
   } catch (err) {
     console.warn('[brain-dump] archive failed:', err);
   }
-  scheduleUndoDismiss(id);
+  scheduleUndoDismiss(pending);
+}
+
+/** v31 "clear day": archive every REMOTE row of one day-group in the current view (segment +
+ *  session filter) in ONE batch PATCH, sharing the single-🗑 Undo path. Local-only unsent notes
+ *  are deliberately skipped — they haven't reached the inbox yet, so "archive" would just destroy
+ *  them; they stay visible in the list instead of silently vanishing. */
+async function archiveDay(dayKey: string): Promise<void> {
+  const items = buildLogRows();
+  let rows = rowsForSegment(items, state.segment ?? 'mine');
+  if (state.sessionFilter) rows = rows.filter((it) => sessionKeyOf(it) === state.sessionFilter);
+  const ids = rows.filter((r) => dayKeyOf(r) === dayKey && r.remote).map((r) => r.id);
+  if (!ids.length) return;
+  if (state.playingId && ids.includes(state.playingId)) stopPlayer();
+  const n = ids.length;
+  const pending = { ids, label: `${n} archived` };
+  state.pendingUndo = pending;
+  state.confirmingClearDay = null;
+  render();
+  buzz();
+  try {
+    const token = await getToken();
+    if (token) await setArchivedMany(token, ids, true);
+    const gone = new Set(ids);
+    if (remoteCache) remoteCache = remoteCache.filter((r) => !gone.has(r.id));
+  } catch (err) {
+    console.warn('[brain-dump] clear day failed:', err);
+  }
+  scheduleUndoDismiss(pending);
 }
 
 let undoTimer: number | null = null;
-/** Close the Undo window after ~6s — the archive is now committed; clear the snackbar. */
-function scheduleUndoDismiss(id: string): void {
+/** Close the Undo window after ~6s — the archive is now committed; clear the snackbar. Keyed by
+ *  the pendingUndo object itself, so a newer archive's window is never closed by an older timer. */
+function scheduleUndoDismiss(pending: { ids: string[]; label: string }): void {
   if (undoTimer !== null) window.clearTimeout(undoTimer);
   undoTimer = window.setTimeout(() => {
-    if (state.pendingUndo?.id === id) {
+    if (state.pendingUndo === pending) {
       state.pendingUndo = null;
       if (state.screen === 'log') render();
     }
   }, UNDO_WINDOW_MS);
 }
 
-/** Undo a just-archived row: restore it (authenticated PATCH archived=false), re-read the inbox so
- *  it reappears, and dismiss the snackbar. */
+/** Undo a just-archived row or day: restore it (authenticated PATCH archived=false, batched),
+ *  re-read the inbox so it reappears, and dismiss the snackbar. */
 async function undoArchive(): Promise<void> {
   const pending = state.pendingUndo;
   if (!pending) return;
@@ -1709,8 +1822,8 @@ async function undoArchive(): Promise<void> {
   try {
     const token = await getToken();
     if (token) {
-      await unarchiveCapture(token, pending.id);
-      await refreshRemoteLog(); // pull it back into the list
+      await setArchivedMany(token, pending.ids, false);
+      await refreshRemoteLog(); // pull them back into the list
     }
   } catch (err) {
     console.warn('[brain-dump] undo archive failed:', err);
