@@ -66,10 +66,10 @@ const SHARE_ITEM_KEY = 'shared-audio';
 
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v29';
+const APP_VERSION = 'v30';
 // Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
 // rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
-const BUILD_DATE = 'Jul 2, 2026 · 8:50am JDT';
+const BUILD_DATE = 'Jul 7, 2026 · 12:00pm JDT';
 
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
@@ -2211,4 +2211,8 @@ void refreshRemoteLog();
 window.addEventListener('pagehide', () => void syncPending());
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') void syncPending();
+  // Coming BACK to the app: the boot-time inbox read is stale by now — an Android PWA can sit
+  // alive in the background for days, so notes Claude pushed meanwhile never appeared until a
+  // full restart (Jul 7 2026: "stuff just isn't there"). Re-pull the inbox on every return.
+  else void refreshRemoteLog();
 });
