@@ -784,6 +784,48 @@ body {
   content: '▾';
 }
 
+/* v33 — VOICE notes collapse too: closed = one line with ▶ / subject / 🎙️ / 🗑 right on the header
+   (her ask: "each voice collapses" + reply/delete reachable at top and bottom). */
+.voice-fold summary.voice-summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0;
+}
+.voice-fold summary.voice-summary::-webkit-details-marker {
+  display: none;
+}
+.voice-fold summary.voice-summary::before {
+  content: '▸';
+  flex-shrink: 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.voice-fold[open] summary.voice-summary::before {
+  content: '▾';
+}
+.voice-summary .claude-subject {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+/* Compact header ▶ — a small round play, accent when this note is the one playing. */
+.card-play.play-compact {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0;
+  width: 34px;
+  height: 34px;
+  justify-content: center;
+  border-radius: 50%;
+}
+.card-play.play-compact.is-playing {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* ▶ Play button on a Claude voice-note card — hands the note to the persistent bar. */
 .card-play {
   display: inline-flex;

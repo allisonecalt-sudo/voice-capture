@@ -66,10 +66,10 @@ const SHARE_ITEM_KEY = 'shared-audio';
 
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v32';
+const APP_VERSION = 'v33';
 // Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
 // rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
-const BUILD_DATE = 'Jul 7, 2026 · 12:45pm JDT';
+const BUILD_DATE = 'Jul 7, 2026 · 12:55pm JDT';
 
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
@@ -671,6 +671,9 @@ interface LogRow {
 
 let remoteCache: RemoteCapture[] | null = null; // last successful inbox read (null = none yet)
 let presenceCache: SessionPresence[] = []; // last session-presence read (which sessions are "listening")
+// v33 — which voice-note folds she's expanded. render() rebuilds the DOM, so without this every
+// action (mark listened, archive elsewhere) would slam her open card shut mid-read.
+const openCards = new Set<string>();
 
 /** Session labels whose heartbeat is fresh (<90s) + watching — shown with a 🟢 "listening" dot so she
  *  can see which sessions will actually read a reply. */
@@ -1312,8 +1315,7 @@ function renderClaudeCard(it: LogRow): string {
     it.listened ? ' is-listened' : ' is-unlistened'
   }" data-card-id="${escapeHtml(it.id)}">`;
   // MEMOS (Info — no audio) collapse under a tappable title: just the subject shows, tap to expand the
-  // text (her ask: "make the info memo with title I can click to expand"). Voice notes keep their
-  // always-visible layout with the ▶ Play button.
+  // text (her ask: "make the info memo with title I can click to expand").
   if (it.fromClaude && !it.audioUrl) {
     return `${cardOpen}
       <details class="memo">
@@ -1324,12 +1326,37 @@ function renderClaudeCard(it: LogRow): string {
       ${meta}
     </li>`;
   }
+  // v33 — VOICE notes collapse too (her ask: "each voice collapses"): closed = ONE line with the
+  // actions she reaches for — ▶ play, 🎙️ reply, 🗑 delete — right on the header ("reply/delete at
+  // top and bottom"); open = transcript + the full bottom row. Open/closed survives re-renders
+  // via openCards. The header buttons preventDefault so a tap never also toggles the fold.
+  const open = openCards.has(it.id) ? ' open' : '';
+  const headerPlay = it.audioUrl
+    ? `<button type="button" class="card-play play-compact${playing ? ' is-playing' : ''}" data-id="${escapeHtml(
+        it.id
+      )}" data-url="${escapeHtml(it.audioUrl)}" data-subject="${escapeHtml(subject)}" aria-label="Play">▶</button>`
+    : '';
+  const headerReply = `<button type="button" class="icon-btn sm reply-btn" data-id="${escapeHtml(
+    it.id
+  )}" data-session="${escapeHtml(it.sessionId ?? '')}" data-snippet="${escapeHtml(
+    truncate(it.transcript, REPLY_SNIPPET_MAX)
+  )}" aria-label="Reply">🎙️</button>`;
+  const headerTrash = `<button type="button" class="icon-btn sm log-archive" data-archive="${escapeHtml(
+    it.id
+  )}" aria-label="Archive">🗑</button>`;
   return `${cardOpen}
-      <p class="claude-subject" dir="auto">${escapeHtml(subject)}</p>
-      ${contextLine}
-      ${player}
-      ${bodyHtml}
-      ${meta}
+      <details class="voice-fold"${open}>
+        <summary class="voice-summary">
+          ${headerPlay}
+          <span class="claude-subject" dir="auto">${escapeHtml(subject)}</span>
+          ${headerReply}
+          ${headerTrash}
+        </summary>
+        ${contextLine}
+        ${player}
+        ${bodyHtml}
+        ${meta}
+      </details>
     </li>`;
 }
 
@@ -1689,7 +1716,8 @@ function wireLog(): void {
   // with an Undo snackbar; a local-only note that never reached the inbox is just dropped from the
   // device buffer (nothing to archive yet, no Undo needed).
   document.querySelectorAll<HTMLButtonElement>('.log-archive').forEach((btn) => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault(); // header 🗑 sits inside a <summary> — don't also toggle the fold
       const remoteId = btn.dataset.archive;
       const localId = btn.dataset.localDel;
       if (remoteId) {
@@ -1703,9 +1731,20 @@ function wireLog(): void {
     });
   });
 
+  // v33 — remember which voice folds are open, so a re-render never slams one shut on her.
+  document.querySelectorAll<HTMLDetailsElement>('details.voice-fold').forEach((d) => {
+    d.addEventListener('toggle', () => {
+      const id = d.closest<HTMLElement>('.claude-card')?.dataset.cardId;
+      if (!id) return;
+      if (d.open) openCards.add(id);
+      else openCards.delete(id);
+    });
+  });
+
   // Reply to a Claude note — stash the parent context and drop into compose to record/type.
   document.querySelectorAll<HTMLButtonElement>('.reply-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault(); // header 🎙️ sits inside a <summary> — don't also toggle the fold
       const id = btn.dataset.id;
       const snippet = btn.dataset.snippet ?? '';
       if (!id) return;
@@ -1723,7 +1762,8 @@ function wireLog(): void {
   // ▶ Play a Claude voice note — hand it to the PERSISTENT bar (playNote), which keeps playing while
   // she navigates. The old inline <audio> + per-card speed chip are gone; speed now lives on the bar.
   document.querySelectorAll<HTMLButtonElement>('.card-play').forEach((btn) => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault(); // header ▶ sits inside a <summary> — play shouldn't also toggle the fold
       const id = btn.dataset.id;
       const url = btn.dataset.url;
       const subject = btn.dataset.subject ?? '';
@@ -2069,6 +2109,11 @@ function tryOpenPendingNote(): void {
     `.claude-card[data-card-id="${CSS.escape(id)}"]`
   );
   if (!card) return; // still not rendered — leave it queued
+  // v33: a deep link means "show me THIS note" — expand its fold before scrolling to it.
+  const fold = card.querySelector<HTMLDetailsElement>('details');
+  if (fold && !fold.open) {
+    fold.open = true; // fires 'toggle', which records it in openCards
+  }
   card.scrollIntoView({ block: 'center' });
   card.classList.add('note-flash');
   window.setTimeout(() => card.classList.remove('note-flash'), 1800);
@@ -2186,7 +2231,9 @@ function updatePlayButtonsInDom(): void {
   document.querySelectorAll<HTMLElement>('.card-play').forEach((b) => {
     const on = b.dataset.id === state.playingId;
     b.classList.toggle('is-playing', on);
-    b.textContent = on ? '▶ Playing' : '▶ Play';
+    // v33: the fold-header ▶ stays a compact glyph; only the full in-card button carries the label.
+    if (b.classList.contains('play-compact')) b.textContent = '▶';
+    else b.textContent = on ? '▶ Playing' : '▶ Play';
   });
 }
 

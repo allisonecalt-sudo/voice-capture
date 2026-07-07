@@ -627,10 +627,11 @@ test.describe('cross-device sync (logged in)', () => {
     await expect(page.locator('.seg[data-seg="voice"]')).toHaveClass(/is-active/);
     const card = page.locator('.claude-card');
     await expect(card).toHaveCount(1);
-    // A voice note shows a ▶ Play button (it plays in the persistent bar, not an inline <audio>).
-    await expect(card.locator('.card-play')).toHaveCount(1);
+    // v33: TWO ▶ Play buttons — the compact one on the fold header + the full one inside.
+    await expect(card.locator('.card-play')).toHaveCount(2);
     await expect(card).toHaveClass(/is-unlistened/);
-    // Marking listened swaps the button for the badge and dims the card (sunk + checked off).
+    // Expand the fold (v33: voice notes collapse to one line), then mark listened.
+    await card.locator('summary.voice-summary').click();
     await card.locator('.mark-listened').click();
     await expect(card.locator('.listened-badge')).toBeVisible();
     await expect(page.locator('.claude-card.is-unlistened')).toHaveCount(0);
@@ -745,6 +746,8 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
     // Voice (active) header states the unheard count, never scolds.
     await expect(page.locator('.segment-header')).toHaveText('1 unheard');
     // After marking it listened, the header flips to the calm "All caught up ✓".
+    // (v33: voice folds start closed — expand to reach the listened toggle.)
+    await page.locator('.claude-card summary.voice-summary').click();
     await page.locator('.claude-card .mark-listened').click();
     await expect(page.locator('.segment-header.is-clear')).toHaveText('All caught up ✓');
   });
@@ -799,8 +802,10 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
     await seedLoggedIn(page);
     const card = page.locator('.claude-card');
     await expect(card).toHaveClass(/is-unlistened/);
+    // v33: expand the fold so the badge assertions below are on visible elements.
+    await card.locator('summary.voice-summary').click();
     // Start playing — must NOT mark it listened (she might leave before finishing).
-    await card.locator('.card-play').click();
+    await card.locator('.card-play').first().click();
     await expect(card).toHaveClass(/is-unlistened/);
     // Finish (audio 'ended') — NOW it marks listened + persists.
     await page.locator('#player-audio').dispatchEvent('ended');
@@ -831,7 +836,7 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
   test('archive soft-deletes with an Undo snackbar (no confirm dialog)', async ({ page }) => {
     await seedLoggedIn(page);
     const card = page.locator('.claude-card');
-    await card.locator('.log-archive[data-archive]').click();
+    await card.locator('.log-archive[data-archive]').first().click();
     // The card drops from view immediately; the Undo snackbar appears (no dialog).
     await expect(page.locator('.claude-card')).toHaveCount(0);
     await expect(page.locator('#undo-snackbar')).toBeVisible();
@@ -852,7 +857,8 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
   }) => {
     await seedLoggedIn(page);
     // Tap Reply on the voice note → drops into compose with a "replying to" banner.
-    await page.locator('.claude-card .reply-btn').click();
+    // (v33: .first() = the fold-header 🎙️ — reply without expanding.)
+    await page.locator('.claude-card .reply-btn').first().click();
     await expect(page.locator('.screen-compose')).toBeVisible();
     await expect(page.locator('.reply-banner')).toBeVisible();
     // Type + send → the saved capture carries the parent id + snippet.
@@ -903,7 +909,7 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
         session_label: 'Voice-capture build',
       },
     ]);
-    await page.locator('.claude-card .reply-btn').click();
+    await page.locator('.claude-card .reply-btn').first().click();
     await expect(page.locator('.screen-compose')).toBeVisible();
     await page.locator('#draft').fill('yes that works');
     await page.locator('#compose-action').click();
