@@ -867,6 +867,25 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
     await expect(page.locator('.reply-banner')).toHaveCount(0);
   });
 
+  test('v32: Reply on the PLAYER BAR threads to the playing note (no hunting for the card)', async ({
+    page,
+  }) => {
+    await seedLoggedIn(page);
+    // Play the voice note → the persistent bar appears with its Reply.
+    await page.locator('.claude-card .card-play').first().click();
+    await expect(page.locator('#player-bar')).toBeVisible();
+    // Tap Reply ON THE BAR → compose with the same threading as the card's Reply button.
+    await page.locator('#player-reply').click();
+    await expect(page.locator('.screen-compose')).toBeVisible();
+    await expect(page.locator('.reply-banner')).toBeVisible();
+    await page.locator('#draft').fill('replying straight from the bar');
+    await page.locator('#compose-action').click();
+    await expect.poll(async () => (await posts(page)).length).toBe(1);
+    const [row] = await posts(page);
+    expect((row as { reply_to?: string }).reply_to).toBe('voice1');
+    expect((row as { reply_snippet?: string }).reply_snippet).toContain('your eval-day plan');
+  });
+
   test('a reply carries the parent note session_id (routes back to that session)', async ({
     page,
   }) => {

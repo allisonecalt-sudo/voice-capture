@@ -865,6 +865,19 @@ body {
   font-weight: 700;
   cursor: pointer;
 }
+/* v32 — Reply on the bar: THE action while listening, so it carries the one accent. */
+.player-reply {
+  flex-shrink: 0;
+  padding: var(--s2) var(--s3);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  color: var(--accent);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
 /* Speed button — a clear, tappable control (not a hidden native menu). */
 #player-speed.speed-btn {
   flex-shrink: 0;

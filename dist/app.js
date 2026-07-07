@@ -39,10 +39,10 @@ const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v31';
+const APP_VERSION = 'v32';
 // Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
 // rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
-const BUILD_DATE = 'Jul 7, 2026 · 12:35pm JDT';
+const BUILD_DATE = 'Jul 7, 2026 · 12:45pm JDT';
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
 const SPEED_STEPS = [1, 1.25, 1.5, 1.75, 2, 0.75];
@@ -255,6 +255,12 @@ function startTimerLoop() {
 async function beginRecording() {
     state.error = null;
     state.levels = new Array(WAVEFORM_BARS).fill(0);
+    // v32: if a Claude note is playing, PAUSE it the moment recording starts — otherwise the mic
+    // records the phone's own speaker over her reply. Pause (not stop): position is saved, so she
+    // can resume right where the note left off after sending.
+    const playing = document.getElementById('player-audio');
+    if (playing && !playing.paused)
+        playing.pause();
     recorder = new AudioRecorder();
     recorder.onLevel = (level) => {
         state.levels.push(level);
@@ -2122,6 +2128,24 @@ function wirePlayerBar() {
     document.getElementById('player-fwd')?.addEventListener('click', () => {
         const end = audio.duration || audio.currentTime + 10;
         audio.currentTime = Math.min(end, audio.currentTime + 10);
+    });
+    // v32 — Reply straight from the bar (her ask: "reply easily from the audio thing", "not go find
+    // reply button"). Threads exactly like the card's Reply: parent id + snippet + session, then
+    // drops into compose. The bar lives outside #app, so the note keeps playing while she types —
+    // and if she RECORDS, beginRecording pauses it so the mic doesn't capture the speaker.
+    document.getElementById('player-reply')?.addEventListener('click', () => {
+        if (!currentNoteId)
+            return;
+        const row = remoteCache?.find((r) => r.id === currentNoteId);
+        const subjEl = document.getElementById('player-subject');
+        state.replyContext = {
+            replyTo: currentNoteId,
+            replySnippet: truncate(row?.transcript ?? subjEl?.textContent ?? '', REPLY_SNIPPET_MAX),
+            sessionId: row?.session_id ?? null,
+        };
+        state.screen = 'compose';
+        render();
+        buzz();
     });
     // Minimize — collapse the bar to a slim strip (audio keeps playing) so it's out of the way, then
     // re-measure the reserved room so the composer/list sit right against the smaller bar.
