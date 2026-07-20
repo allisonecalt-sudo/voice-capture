@@ -22,27 +22,35 @@
 //          (copy/delete/clear-all), Settings, share-target ingest, local-first history + sync.
 // NEXT:   hardware back-button integration + delete-undo are deliberate future polish.
 import { transcribeAudio } from './gemini.js';
-import { TARGET_SAMPLE_RATE, downsampleBuffer, mergeChunks, encodeWav, blobToBase64, } from './wav.js';
-import { addCapture, clearHistory, deleteCapture, loadHistory, pruneSyncedLocal, syncPending, } from './history.js';
-import { archiveCapture, fetchRemoteCaptures, fetchSessionPresence, markListened, setArchivedMany, } from './supabase.js';
+import { TARGET_SAMPLE_RATE, downsampleBuffer, mergeChunks, encodeWav, blobToBase64, splitWavBlob, } from './wav.js';
+import { storePendingAudio, loadPendingAudio, clearPendingAudio } from './pending-audio.js';
+import { addCapture, deleteCapture, loadHistory, pruneSyncedLocal, syncPending, } from './history.js';
+import { fetchRemoteCaptures, fetchSessionPresence, markListened, setArchivedMany, } from './supabase.js';
 import { currentEmail, getToken, isLoggedIn, login, logout } from './auth.js';
 import { isPushSupported, pushPermission, subscribeToPush } from './push.js';
 // ── Constants ───────────────────────────────────────────────────────────────
 const KEY_STORAGE = 'voice-capture.gemini-key';
-// Inline base64 ceiling. A 16 kHz mono 16-bit WAV is ~1.9 MB/min and Gemini's inline cap is
-// ~20 MB; we nudge to stop at 10 min and hard-stop at 12 to protect the request.
+// Recording length limits. v34: these no longer protect the transcription request — long audio
+// is SPLIT into safe chunks before sending (see CHUNK_DATA_BYTES) — they bound the raw Float32
+// capture buffer held in phone RAM (~10 MB/min at 44.1 kHz) so a forgotten mic can't eat memory.
 const SOFT_LIMIT_SECONDS = 10 * 60;
 const HARD_LIMIT_SECONDS = 12 * 60;
+// v34 — max PCM bytes per transcription request. A 16 kHz mono 16-bit WAV is ~1.92 MB/min; base64
+// inflates ×4/3 and Gemini's documented inline request cap is ~20 MB. 10 MB of PCM ≈ 5.4 min ≈
+// 13.4 MB base64 — comfortably under the cap with the prompt riding along. A longer recording is
+// split into ≤10 MB WAV chunks, transcribed in order, and the transcripts joined — so a long
+// brain-dump (the note she'd least want to lose) transcribes instead of dead-ending.
+const CHUNK_DATA_BYTES = 10 * 1024 * 1024;
 const WAVEFORM_BARS = 28;
 // Web Share Target hand-off — must match the names the service worker uses in handleShareTarget.
 const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v33';
+const APP_VERSION = 'v34';
 // Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
 // rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
-const BUILD_DATE = 'Jul 7, 2026 · 12:55pm JDT';
+const BUILD_DATE = 'Jul 20, 2026 · 3:58pm JDT';
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
 const SPEED_STEPS = [1, 1.25, 1.5, 1.75, 2, 0.75];
@@ -63,10 +71,11 @@ const state = {
     error: null,
     levels: new Array(WAVEFORM_BARS).fill(0),
     copiedId: null,
-    confirmingClear: false,
+    confirmingClear: null,
     needsKeyPrompt: false,
     paused: false,
     pendingVoice: null,
+    transcribeProgress: null,
     segment: null,
     replyContext: null,
     pendingUndo: null,
@@ -253,6 +262,11 @@ function startTimerLoop() {
     }, 1000);
 }
 async function beginRecording() {
+    // v34 — double-tap guard: a second mic tap while one recorder exists (starting OR running)
+    // would stack two recorders and leave the first one's mic stream leaked-on forever. `recorder`
+    // is assigned synchronously below, before any await, so this check closes the whole window.
+    if (recorder)
+        return;
     state.error = null;
     state.levels = new Array(WAVEFORM_BARS).fill(0);
     // v32: if a Claude note is playing, PAUSE it the moment recording starts — otherwise the mic
@@ -303,8 +317,15 @@ async function finishRecording() {
         wavBlob = await recorder.stop();
     }
     catch (err) {
+        // stop() failing means the audio never became a blob — there is genuinely nothing held, so
+        // the message must NOT promise "your recording is safe" (review-caught: it did, with no
+        // Retry/Save buttons and nothing to retry). Honest words, nothing else.
         recorder = null;
-        failTranscription(err);
+        console.warn('[brain-dump] recorder.stop failed:', err);
+        state.error = 'The mic cut out and this recording couldn’t be kept. So sorry — try again.';
+        state.screen = 'compose';
+        render();
+        showToast('Recording failed');
         return;
     }
     recorder = null;
@@ -356,12 +377,29 @@ function resumeRecording() {
  */
 async function transcribeBlob(blob, mimeType, durationSeconds, source = 'voice') {
     state.screen = 'transcribing';
+    state.transcribeProgress = null;
     render();
     try {
-        const base64 = await blobToBase64(blob);
-        const transcript = await transcribeAudio(getKey(), base64, mimeType);
+        // v34 — a LONG recording is split into safe-sized WAV chunks and transcribed in order (the
+        // single inline request has a hard size cap; one big payload = a rejected, unrecoverable
+        // note). Non-WAV audio (a shared WhatsApp clip) can't be sliced — if one is somehow over the
+        // cap, the send fails loudly below and the Save-file escape keeps the audio recoverable.
+        const parts = mimeType === 'audio/wav' && blob.size > 44 + CHUNK_DATA_BYTES
+            ? await splitWavBlob(blob, CHUNK_DATA_BYTES)
+            : [blob];
+        const texts = [];
+        for (let i = 0; i < parts.length; i++) {
+            if (parts.length > 1) {
+                state.transcribeProgress = { part: i + 1, total: parts.length };
+                if (state.screen === 'transcribing')
+                    render();
+            }
+            const base64 = await blobToBase64(parts[i]);
+            texts.push((await transcribeAudio(getKey(), base64, mimeType)).trim());
+        }
+        state.transcribeProgress = null;
         state.error = null;
-        const text = transcript.trim();
+        const text = texts.filter((t) => t.length > 0).join('\n\n');
         if (!text) {
             // Empty transcription (silence / no speech) — nothing to save; quietly return to compose.
             state.screen = 'compose';
@@ -370,7 +408,13 @@ async function transcribeBlob(blob, mimeType, durationSeconds, source = 'voice')
             return;
         }
         addCapture(text, durationSeconds, source, consumeReplyContext()); // local-first, never lose it
-        state.pendingVoice = null; // succeeded — nothing left to retry
+        // Clear the held-recording slot ONLY if it holds THIS audio. A different recording's success
+        // must never wipe a held failed one (review-caught: record A fails + is held → record B
+        // succeeds → the unconditional clear destroyed A everywhere, banner and all).
+        if (state.pendingVoice && state.pendingVoice.blob === blob) {
+            state.pendingVoice = null;
+            void clearPendingAudio();
+        }
         state.screen = 'compose';
         render();
         showToast('Saved ✓');
@@ -379,23 +423,85 @@ async function transcribeBlob(blob, mimeType, durationSeconds, source = 'voice')
     }
     catch (err) {
         // Hold the audio so the failure message ("recording is safe") is honest and Retry can re-send.
-        state.pendingVoice = { blob, mimeType, durationSeconds };
+        state.transcribeProgress = null;
+        state.pendingVoice = { blob, mimeType, durationSeconds, source };
+        // v34 — make "your recording is safe" TRUE: persist the audio durably (IndexedDB) so closing
+        // the app / Android evicting it can't destroy the recording. Restored on next open.
+        void storePendingAudio({
+            blob,
+            mimeType,
+            durationSeconds,
+            source: source === 'whatsapp' ? 'whatsapp' : 'voice',
+            failedAt: new Date().toISOString(),
+        });
         failTranscription(err);
     }
 }
 function failTranscription(err) {
-    state.error = err instanceof Error ? err.message : 'Transcription failed. Please try again.';
+    state.error = humanizeTranscriptionError(err);
     state.screen = 'compose';
     render();
     showToast('Transcription failed');
 }
-/** Re-run transcription on the held-back recording from a prior failed attempt. */
+/** Human words for a failed transcription — never a raw API error string on screen. The known
+ *  friendly messages (offline / busy — written for her) pass through; anything technical becomes
+ *  one calm line. The raw error still goes to the console for debugging. */
+function humanizeTranscriptionError(err) {
+    const raw = err instanceof Error ? err.message : '';
+    if (raw.includes('recording is safe'))
+        return raw; // gemini.ts's own friendly copy
+    console.warn('[brain-dump] transcription failed:', raw || err);
+    return "Transcription didn't work this time. Your recording is safe — retry, or save the file.";
+}
+/** Re-run transcription on the held-back recording from a prior failed attempt. Carries the
+ *  original source so a retried WhatsApp share still files under Shared (v34 fix). */
 function retryPendingVoice() {
     const pending = state.pendingVoice;
     if (!pending)
         return;
     state.error = null;
-    void transcribeBlob(pending.blob, pending.mimeType, pending.durationSeconds);
+    void transcribeBlob(pending.blob, pending.mimeType, pending.durationSeconds, pending.source);
+}
+/** v34 — the escape hatch: download the held recording as a file so a note can NEVER dead-end in
+ *  the app (too-long clip, key trouble, anything). Object URL is revoked after the click. */
+function downloadPendingVoice() {
+    const pending = state.pendingVoice;
+    if (!pending)
+        return;
+    const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', '');
+    const ext = pending.mimeType === 'audio/wav' ? 'wav' : (pending.mimeType.split('/')[1] ?? 'audio');
+    const url = URL.createObjectURL(pending.blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `brain-dump recording ${stamp}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+    showToast('Saved to your files');
+}
+/** v34 — on boot: restore a recording that failed BEFORE the app was last closed, so eviction
+ *  can't silently destroy it. Quiet banner on compose (Retry / Save file / Discard) — no hijack. */
+async function restorePendingAudio() {
+    if (state.pendingVoice)
+        return; // an in-session failure is already showing
+    const held = await loadPendingAudio();
+    // Re-check AFTER the await: a share-ingest failure can land while the IndexedDB read is in
+    // flight, and the fresher in-memory hold must win (review-caught ordering race).
+    if (!held || state.pendingVoice)
+        return;
+    state.pendingVoice = {
+        blob: held.blob,
+        mimeType: held.mimeType,
+        durationSeconds: held.durationSeconds,
+        source: held.source,
+    };
+    if (!state.error) {
+        state.error =
+            "A recording from earlier didn't transcribe — it's safe here. Retry when you're ready.";
+    }
+    if (state.screen === 'compose')
+        render();
 }
 // ── Share target: a WhatsApp voice note shared INTO the app ───────────────────
 /**
@@ -538,26 +644,120 @@ function legacyCopy(text) {
     document.body.removeChild(ta);
 }
 // ── Log actions ───────────────────────────────────────────────────────────────
-function clearLog() {
-    if (!state.confirmingClear) {
-        // First tap arms it; auto-disarm after a few seconds so it can't stay hot.
-        state.confirmingClear = true;
-        render();
-        window.setTimeout(() => {
-            if (state.confirmingClear) {
-                state.confirmingClear = false;
-                if (state.screen === 'log')
-                    render();
-            }
-        }, 4000);
+// ── v34.1: VIEW-SCOPED two-tap arming (kills the "hot button carried onto a view she never armed"
+//     bug class) ────────────────────────────────────────────────────────────────────────────────
+// The old design stored a bare boolean/day-key: "armed" was true regardless of which tab she was
+// on, so EVERY navigation path had to remember to disarm — and any that forgot (deep-link open,
+// notification jump, Log re-open, back/settings) left a hot button on a set she never armed. v34
+// patched two of those paths and missed the rest. The structural fix: key the arm to the VIEW it
+// was armed in, and gate BOTH the "armed" paint and the confirm tap on the key matching the
+// CURRENT view. A view change then cancels the arm BY CONSTRUCTION — no handler has to remember.
+let armTimer = null;
+/** A stable signature of a Log view: segment + its effective session filter. JSON.stringify makes
+ *  it collision-proof (a session label can be arbitrary text) and readable. The two-tap arm is
+ *  keyed to this string, so it cannot match a different view. */
+function viewKeyOf(seg, filter) {
+    return JSON.stringify(['view', seg, filter]);
+}
+/** The CURRENT Log view's key, resolved EXACTLY as renderLog resolves activeSegment/activeFilter
+ *  (same default-land, same stale-filter fallback) so a handler and the render never disagree. */
+function currentViewKey() {
+    const items = buildLogRows();
+    const seg = state.segment ?? defaultSegment(items);
+    let filter = null;
+    if (seg === 'voice' || seg === 'info') {
+        if (state.sessionFilter &&
+            claudeSessions(items, seg).some((s) => s.key === state.sessionFilter)) {
+            filter = state.sessionFilter;
+        }
+    }
+    return viewKeyOf(seg, filter);
+}
+/** A day divider's arm key: the view it lives in + the day. Distinct shape from viewKeyOf (a 'day'
+ *  tag + the day), so a day arm can never collide with a tab-level "Archive all" arm. */
+function dayArmKey(viewKey, day) {
+    return JSON.stringify(['day', viewKey, day]);
+}
+/** Arm a two-tap control — the tab "Archive all" ('clear') or a day divider ('day') — keyed to the
+ *  exact view/day. One tracked 4s timer auto-disarms so nothing stays hot. Because the arm is
+ *  view-keyed, a stale timer or a missed reset can only ever DISARM, never fire an archive. */
+function armTwoTap(which, key) {
+    disarmTwoTap(); // clears any prior arm + its timer
+    if (which === 'clear')
+        state.confirmingClear = key;
+    else
+        state.confirmingClearDay = key;
+    render();
+    armTimer = window.setTimeout(() => {
+        armTimer = null;
+        if (state.confirmingClear === null && state.confirmingClearDay === null)
+            return;
+        state.confirmingClear = null;
+        state.confirmingClearDay = null;
+        if (state.screen === 'log')
+            render();
+    }, 4000);
+}
+/** Cancel any hot two-tap arm + its timer. Does NOT render (navigating callers render anyway).
+ *  Correctness does NOT depend on this being called — the view-key match is the real guard — it
+ *  just disarms promptly on deliberate navigation and frees the timer. */
+function disarmTwoTap() {
+    if (armTimer !== null) {
+        window.clearTimeout(armTimer);
+        armTimer = null;
+    }
+    state.confirmingClear = null;
+    state.confirmingClearDay = null;
+}
+/** v34 "Archive all" — the whole-tab version of the per-day Clear, on EVERY tab (her ask, Jul 16:
+ *  "under my notes, shared voice, notes — each one should have a clear all option" → "make archive
+ *  all per page"). First tap arms THIS view, second tap (same view) archives; auto-disarms after 4s.
+ *
+ *  It replaces the old local-wipe clearLog(), which was wrong in BOTH directions: logged in,
+ *  pruneSyncedLocal() has already dropped every synced local copy, so the buffer holds ONLY notes
+ *  that never reached the inbox — the wipe destroyed exactly the notes that existed nowhere else,
+ *  with no Undo — while the synced copies it claimed to clear sat untouched in the inbox and came
+ *  back on the next read. Now "archive" means one thing everywhere: soft-archive, Undo-able,
+ *  pullable from Supabase forever after ("archived nicely so i can pull when needed"). */
+function archiveAllInView() {
+    const viewKey = currentViewKey();
+    if (state.confirmingClear !== viewKey) {
+        armTwoTap('clear', viewKey); // first tap arms THIS view
         return;
     }
-    clearHistory();
-    state.confirmingClear = false;
-    render();
-    showToast('Log cleared');
+    disarmTwoTap();
+    void archiveRows(archivableInView().map((r) => r.id));
+}
+/** Every row the tab's "Archive all" would take: the REMOTE rows of the current view (segment +
+ *  session filter). Local-only unsent notes are excluded on purpose — they haven't reached the
+ *  inbox, so there's nothing to archive and "clearing" them would just destroy them; they stay
+ *  visible instead (same rule as the per-day Clear). Drives both the gate and the armed count. */
+function archivableInView() {
+    const items = buildLogRows();
+    const seg = state.segment ?? defaultSegment(items);
+    let rows = rowsForSegment(items, seg);
+    // Mirror renderLog's filter resolution EXACTLY — same segment, same session filter, same
+    // stale-filter fallback to All. If this drifted from the render, the armed count would promise
+    // one thing and archive another.
+    const isClaudeSeg = seg === 'voice' || seg === 'info';
+    if (isClaudeSeg && state.sessionFilter) {
+        const sessions = claudeSessions(items, seg);
+        if (sessions.some((s) => s.key === state.sessionFilter)) {
+            rows = rows.filter((it) => sessionKeyOf(it) === state.sessionFilter);
+        }
+    }
+    return rows.filter((r) => r.remote);
 }
 let remoteCache = null; // last successful inbox read (null = none yet)
+// v34 — did the most recent inbox read FAIL? Drives the honest offline state: with no successful
+// read and this set, the Log says "can't load right now" instead of the "Nothing captured yet" +
+// "✓ Synced" lie that caused the July-7 scare. Cleared by the next successful read.
+let remoteReadFailed = false;
+// v34.1 — rows whose archive PATCH is still in flight (held out of every view even after a newer
+// archive replaces pendingUndo), and the PATCH promise itself so Undo can WAIT for it instead of
+// racing it with a conflicting un-archive PATCH (review-caught: the two could land out of order).
+const archivingIds = new Set();
+let archivePatchInFlight = null;
 let presenceCache = []; // last session-presence read (which sessions are "listening")
 // v33 — which voice-note folds she's expanded. render() rebuilds the DOM, so without this every
 // action (mark listened, archive elsewhere) would slam her open card shut mid-read.
@@ -617,10 +817,15 @@ function buildLogRows() {
         rows = [...remoteRows, ...localOnly].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
     }
     // Hold out rows that are mid-Undo so they don't flicker back in before the PATCH commits.
-    if (state.pendingUndo) {
-        const held = new Set(state.pendingUndo.ids);
+    // v34.1: ALSO hold out rows whose archive PATCH is still in flight — a SECOND archive replaces
+    // pendingUndo, and without this the first batch's rows visibly reappeared for ~6s until its
+    // PATCH landed (review-caught).
+    const held = new Set(archivingIds);
+    if (state.pendingUndo)
+        for (const id of state.pendingUndo.ids)
+            held.add(id);
+    if (held.size)
         rows = rows.filter((r) => !held.has(r.id));
-    }
     return rows;
 }
 /** Pull the inbox in the background and re-render the Log when it lands. Silent on failure. */
@@ -629,12 +834,16 @@ async function refreshRemoteLog() {
         return;
     const token = await getToken();
     if (!token) {
+        // v34: getToken() now returns null for BOTH a dead session and a network blip (session kept).
+        // Either way this read didn't happen — record that so the Log can't claim "✓ Synced".
+        remoteReadFailed = true;
         if (state.screen === 'log')
-            render(); // session expired → reflect logged-out
+            render(); // reflect logged-out / can't-load honestly
         return;
     }
     try {
         remoteCache = await fetchRemoteCaptures(token);
+        remoteReadFailed = false;
         // The inbox read is now the source of truth for everything that's synced — drop local copies
         // of synced notes so every logged-in device shows the SAME shared list and filed notes vanish.
         pruneSyncedLocal();
@@ -651,7 +860,13 @@ async function refreshRemoteLog() {
         tryOpenPendingNote();
     }
     catch (err) {
+        // v34 — a failed inbox read must SHOW. The old silent catch left the Mine tab claiming
+        // "Nothing captured yet" under a green "✓ Synced" — the exact July-7 "my stuff is gone"
+        // fright, with her notes sitting safe on the server the whole time.
         console.warn('[brain-dump] inbox read failed:', err);
+        remoteReadFailed = true;
+        if (state.screen === 'log')
+            render();
     }
 }
 // ── Rendering ─────────────────────────────────────────────────────────────────
@@ -719,6 +934,7 @@ function renderCompose() {
       ${state.pendingVoice
         ? `<div class="retry-prompt" role="status">
         <button type="button" class="btn btn-primary" id="retry-voice">↻ Retry transcription</button>
+        <button type="button" class="btn btn-ghost" id="download-voice">⬇ Save file</button>
         <button type="button" class="btn btn-ghost" id="discard-voice" aria-label="Discard recording">✕ Discard</button>
       </div>`
         : ''}
@@ -768,11 +984,15 @@ function renderRecording() {
     </main>`;
 }
 function renderTranscribing() {
+    // A split long recording shows which part is in flight — honest progress, not a stuck spinner.
+    const p = state.transcribeProgress;
+    const label = p ? `Transcribing… part ${p.part} of ${p.total}` : 'Transcribing…';
+    const hint = p ? 'Long recording — sending it in pieces.' : 'Turning your voice into text.';
     return `
     <main class="screen screen-transcribing">
       <div class="spinner" role="status" aria-live="polite" aria-label="Transcribing"></div>
-      <p class="transcribing-text">Transcribing…</p>
-      <p class="muted-hint">Turning your voice into text.</p>
+      <p class="transcribing-text">${label}</p>
+      <p class="muted-hint">${hint}</p>
     </main>`;
 }
 // ── Segments (the 3-view Log) ─────────────────────────────────────────────────
@@ -871,7 +1091,7 @@ function dayLabel(key) {
 /** Render a segment's cards grouped under DAY dividers (newest day first — rows arrive desc).
  *  Each divider carries the one "Clear" for that day (two-tap armed → archives the day, Undo-able).
  *  Only remote rows can be cleared; a day of purely-local unsent notes gets no Clear button. */
-function renderDayGroups(rows) {
+function renderDayGroups(rows, viewKey) {
     const order = [];
     const groups = new Map();
     for (const r of rows) {
@@ -890,7 +1110,7 @@ function renderDayGroups(rows) {
         const groupRows = groups.get(key);
         const clearable = groupRows.filter((r) => r.remote);
         const unheard = clearable.filter(isUnheard).length;
-        const armed = state.confirmingClearDay === key;
+        const armed = state.confirmingClearDay === dayArmKey(viewKey, key);
         // Armed copy states what's about to happen — including unheard notes riding along — so the
         // second tap is informed, not a surprise. Counts stated, never scolded.
         const armedLabel = unheard > 0
@@ -986,6 +1206,9 @@ function renderLog() {
     if (isClaudeSeg && activeFilter) {
         segRows = segRows.filter((it) => sessionKeyOf(it) === activeFilter);
     }
+    // v34.1 — the signature of THIS view. The two-tap "Archive all" + each day "Clear" paint "armed"
+    // only when their stored key matches this, so a hot button can't survive a tab/filter change.
+    const viewKey = viewKeyOf(activeSegment, activeFilter);
     // The dropdown only earns its place with 2+ sessions; below that, one flat list is calmer.
     const sessionDropdown = isClaudeSeg && sessions.length >= 2 ? renderSessionDropdown(sessions, activeFilter) : '';
     // A "listening now" line so she can SEE which sessions are live + reading her replies (even with
@@ -995,44 +1218,80 @@ function renderLog() {
     const presenceLine = isClaudeSeg && liveLabels.length
         ? `<p class="presence-line">🟢 Listening now — ${liveLabels.map((l) => escapeHtml(l)).join(', ')}</p>`
         : '';
-    const hasLocal = loadHistory().length > 0;
     // Logged-out is a BROKEN state here, not a preference — Claude notes silently can't load. So it
     // gets a real banner, not a quiet text link (her rule, Jul 7 2026: "you have to tell me if not
     // logged in" — she lost a morning of notes to a silent session expiry). Fail-loud.
-    const syncState = isLoggedIn()
-        ? `<p class="log-sync" id="log-sync">✓ Synced — your notes from every device</p>`
-        : `<button class="logged-out-banner" id="log-login">
+    // v34: "✓ Synced" is only claimed when a read has actually LANDED. No read yet + a failure →
+    // an honest can't-load banner (tap to retry); no read yet + still in flight → "Loading…".
+    // The old version painted "✓ Synced" from login state alone — offline, that read as her notes
+    // being GONE ("Nothing captured yet") when they were safe on the server.
+    const syncState = !isLoggedIn()
+        ? `<button class="logged-out-banner" id="log-login">
          <span class="banner-icon" aria-hidden="true">⚠️</span>
          <span class="banner-text"><strong>You're logged out.</strong> Notes from Claude can't load.</span>
          <span class="banner-action">Log in</span>
-       </button>`;
-    // "Clear all" only clears THIS device's local buffer; gate it on local items existing.
-    const tools = hasLocal
+       </button>`
+        : remoteCache !== null
+            ? remoteReadFailed
+                ? `<button class="logged-out-banner" id="log-retry">
+             <span class="banner-icon" aria-hidden="true">⚠️</span>
+             <span class="banner-text">Showing your last loaded notes — <strong>can’t refresh right now.</strong></span>
+             <span class="banner-action">Retry</span>
+           </button>`
+                : `<p class="log-sync" id="log-sync">✓ Synced — your notes from every device</p>`
+            : remoteReadFailed
+                ? `<button class="logged-out-banner" id="log-retry">
+             <span class="banner-icon" aria-hidden="true">⚠️</span>
+             <span class="banner-text"><strong>Can't reach your notes right now.</strong> They're safe — this shows this phone only.</span>
+             <span class="banner-action">Retry</span>
+           </button>`
+                : `<p class="log-sync" id="log-sync">Loading your notes…</p>`;
+    // v34 — every tab gets "Archive all": the whole-tab version of the per-day Clear, same batch
+    // PATCH, same Undo, everything stays pullable. Gated on the view actually having archivable
+    // (remote) rows — so it's absent when there's nothing to take, and absent logged-out, where the
+    // only notes present are unsynced ones that live NOWHERE else (the banner says to log in; we
+    // don't hand her a button whose only possible act is destroying them). Armed copy states the
+    // count + any unheard riding along, so the second tap is informed. Same shape as day-clear.
+    const archivable = archivableInView();
+    const unheardArchivable = archivable.filter(isUnheard).length;
+    const armedLabel = unheardArchivable > 0
+        ? `Archive ${archivable.length} · ${unheardArchivable} unheard?`
+        : `Archive ${archivable.length}?`;
+    const clearArmed = state.confirmingClear === viewKey; // armed ONLY for the view it was armed in
+    const tools = archivable.length
         ? `<div class="log-tools">
-           <button class="btn-text ${state.confirmingClear ? 'is-armed' : ''}" id="clear-all">${state.confirmingClear ? 'Tap again to clear all' : 'Clear all'}</button>
+           <button class="btn-text ${clearArmed ? 'is-armed' : ''}" id="archive-all">${clearArmed ? armedLabel : 'Archive all'}</button>
          </div>`
         : '';
     // The active segment renders as ONE list (unheard up top, listened dimmed + sunk below). Empty
     // states are gentle + segment-specific (anti-quit register — never "you missed", just calm).
     // Logged out, the Claude tabs must NOT claim "no notes yet" — that's the lie that hid a whole
     // morning of notes. Say what's actually true: can't load until she logs in.
+    // v34: while logged in with NO successful read, an empty tab must never claim "nothing here" —
+    // that's the lie that read as wiped notes. Say what's true: can't load (or still loading).
+    const unloaded = isLoggedIn() && remoteCache === null;
+    const unloadedCopy = remoteReadFailed
+        ? 'Can’t load right now — your notes are safe on the server. Tap Retry above.'
+        : 'Loading your notes…';
     const emptyCopy = {
-        mine: 'Nothing captured yet.',
-        shared: 'Nothing shared in yet.',
-        voice: isLoggedIn()
-            ? 'No voice notes from Claude yet.'
-            : 'Logged out — Claude notes can’t load. Tap the banner above to log in.',
-        info: isLoggedIn()
-            ? 'No memos from Claude yet.'
-            : 'Logged out — Claude memos can’t load. Tap the banner above to log in.',
+        mine: unloaded ? unloadedCopy : 'Nothing captured yet.',
+        shared: unloaded ? unloadedCopy : 'Nothing shared in yet.',
+        voice: !isLoggedIn()
+            ? 'Logged out — Claude notes can’t load. Tap the banner above to log in.'
+            : unloaded
+                ? unloadedCopy
+                : 'No voice notes from Claude yet.',
+        info: !isLoggedIn()
+            ? 'Logged out — Claude memos can’t load. Tap the banner above to log in.'
+            : unloaded
+                ? unloadedCopy
+                : 'No memos from Claude yet.',
     };
     // v31: every tab groups under DAY dividers (Today / Yesterday / …) — one timeline, one "Clear"
     // per day. Sessions are still reachable through the dropdown filter above.
     const list = segRows.length
-        ? `<ul class="log-list">${renderDayGroups(segRows)}</ul>`
+        ? `<ul class="log-list">${renderDayGroups(segRows, viewKey)}</ul>`
         : `<p class="log-empty">${emptyCopy[activeSegment]}</p>`;
-    // Only "My Notes" can be cleared (her local buffer) — hide the tool on the Claude tabs.
-    const toolsForSegment = activeSegment === 'mine' ? tools : '';
     return `
     <header class="topbar">
       <button class="icon-btn" id="log-back" aria-label="Back" title="Back">←</button>
@@ -1048,7 +1307,7 @@ function renderLog() {
       ${segmentHeader(items, activeSegment)}
       ${presenceLine}
       ${sessionDropdown}
-      ${toolsForSegment}
+      ${tools}
       ${list}
       ${renderUndoSnackbar()}
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -1144,9 +1403,11 @@ function renderClaudeCard(it) {
     const cardOpen = `<li class="log-card claude-card${it.listened ? ' is-listened' : ' is-unlistened'}" data-card-id="${escapeHtml(it.id)}">`;
     // MEMOS (Info — no audio) collapse under a tappable title: just the subject shows, tap to expand the
     // text (her ask: "make the info memo with title I can click to expand").
+    // v34: open state survives re-renders via openCards — same fix voice folds got in v33; without
+    // it, "Mark as listened" (or any background re-render) slammed the memo shut mid-read.
     if (it.fromClaude && !it.audioUrl) {
         return `${cardOpen}
-      <details class="memo">
+      <details class="memo"${openCards.has(it.id) ? ' open' : ''}>
         <summary class="claude-subject memo-summary" dir="auto">${escapeHtml(subject)}</summary>
         ${contextLine}
         ${bodyHtml}
@@ -1261,9 +1522,17 @@ function renderNotifyCard() {
     // If permission was granted but the device row never landed (silent 401/network), we stay on the
     // "🔔 Notify me" CTA so the retry is reachable instead of falsely claiming it's set up.
     const subscribed = perm === 'granted' && isPushSubscribed();
-    const cta = subscribed
-        ? `<button class="btn btn-ghost" id="notify-btn" disabled>✓ Notifications on</button>`
-        : `<button class="btn btn-primary" id="notify-btn">🔔 Notify me</button>`;
+    // v34 privacy — notifications are LOGIN-GATED. The app URL is public: without the gate, any
+    // stranger who opened it and tapped "Notify me" would register THEIR device and receive her
+    // note titles. Logged out, the button doesn't render at all; the send side is scoped too.
+    // The "on" button stays TAPPABLE (re-runs the subscribe; the endpoint-conflict 409 makes it
+    // idempotent) — a server-side-dead subscription used to latch "✓ on" forever with no way to
+    // re-register while pushes silently stopped (review-caught).
+    const cta = !isLoggedIn()
+        ? `<p class="settings-help">Log in above to turn on notifications — they're tied to your account.</p>`
+        : subscribed
+            ? `<button class="btn btn-ghost" id="notify-btn" title="Tap to re-check">✓ Notifications on · tap to refresh</button>`
+            : `<button class="btn btn-primary" id="notify-btn">🔔 Notify me</button>`;
     return `
       <div class="card">
         <p class="settings-label">Notes from Claude</p>
@@ -1383,7 +1652,7 @@ function wireCompose() {
     document.getElementById('open-log')?.addEventListener('click', () => {
         void syncPending();
         state.copiedId = null;
-        state.confirmingClear = false;
+        disarmTwoTap(); // fresh Log open — no arm should carry in from a prior visit
         state.segment = null; // recompute default-land each fresh open (lands on unheard, else Mine)
         // Invalidate the inbox cache too, so default-land does NOT latch off a STALE remoteCache before
         // the fresh read lands. With remoteCache null, renderLog's dataReady is false on first paint (it
@@ -1413,12 +1682,16 @@ function wireCompose() {
     // Retry a recording whose transcription failed (held in state.pendingVoice).
     document.getElementById('retry-voice')?.addEventListener('click', retryPendingVoice);
     // Throw away a held recording she doesn't want — no save, no nag. (Her 2026-06-24 ask.)
+    // v34: also drops the DURABLE copy, so a discarded recording doesn't resurrect on next open.
     document.getElementById('discard-voice')?.addEventListener('click', () => {
         state.pendingVoice = null;
         state.error = null;
+        void clearPendingAudio();
         render();
         showToast('Discarded');
     });
+    // v34 — the escape hatch: save the held recording out as a real file.
+    document.getElementById('download-voice')?.addEventListener('click', downloadPendingVoice);
     // Keyless-mic explainer: go set up voice, or dismiss and keep typing.
     document.getElementById('setup-voice')?.addEventListener('click', () => {
         state.needsKeyPrompt = false;
@@ -1443,12 +1716,12 @@ function wireCompose() {
 function wireLog() {
     document.getElementById('log-back')?.addEventListener('click', () => {
         state.copiedId = null;
-        state.confirmingClear = false;
+        disarmTwoTap(); // leaving the Log — drop any hot arm
         state.screen = 'compose';
         render();
     });
     document.getElementById('open-settings')?.addEventListener('click', () => {
-        state.confirmingClear = false;
+        disarmTwoTap(); // leaving the Log — drop any hot arm
         state.screen = 'settings';
         render();
     });
@@ -1462,7 +1735,12 @@ function wireLog() {
         state.screen = 'settings';
         render();
     });
-    document.getElementById('clear-all')?.addEventListener('click', clearLog);
+    // v34 — the can't-load banner's Retry: just re-pull the inbox.
+    document.getElementById('log-retry')?.addEventListener('click', () => {
+        showToast('Trying again…');
+        void refreshRemoteLog();
+    });
+    document.getElementById('archive-all')?.addEventListener('click', archiveAllInView);
     // Segmented control — switch which of the 3 views is showing (state.segment), then re-render.
     document.querySelectorAll('.seg').forEach((btn) => {
         btn.addEventListener('click', () => {
@@ -1472,12 +1750,14 @@ function wireLog() {
             state.segment = seg;
             state.sessionFilter = null; // a session filter is per-tab; reset when she switches tabs
             state.copiedId = null;
+            disarmTwoTap(); // deliberate view change — drop any hot arm promptly (view-key guards the rest)
             render();
         });
     });
     // v22 — the by-session dropdown: focus one session's notes (or All).
     document.getElementById('session-filter')?.addEventListener('change', (e) => {
         state.sessionFilter = e.target.value || null;
+        disarmTwoTap(); // the filter change is a view change — drop any hot arm
         render();
     });
     // Undo an archive within the grace window — restore the row + dismiss the snackbar.
@@ -1508,17 +1788,19 @@ function wireLog() {
     });
     // v31 "Clear" on each day divider — two-tap guard (arm → confirm), then archive the whole day
     // in one batch with the same Undo snackbar as a single 🗑. Arming a different day re-arms there.
+    // v34.1: the arm is keyed to VIEW+day (dayArmKey), so a day armed on one tab can't go hot on
+    // another tab's same date, and can't survive a navigation onto a different view.
     document.querySelectorAll('.day-clear').forEach((btn) => {
         btn.addEventListener('click', () => {
             const day = btn.dataset.day;
             if (!day)
                 return;
-            if (state.confirmingClearDay === day) {
+            const key = dayArmKey(currentViewKey(), day);
+            if (state.confirmingClearDay === key) {
                 void archiveDay(day);
             }
             else {
-                state.confirmingClearDay = day;
-                render();
+                armTwoTap('day', key);
             }
         });
     });
@@ -1543,7 +1825,8 @@ function wireLog() {
         });
     });
     // v33 — remember which voice folds are open, so a re-render never slams one shut on her.
-    document.querySelectorAll('details.voice-fold').forEach((d) => {
+    // v34 — memos too (same bug, same fix — a re-render was collapsing a memo mid-read).
+    document.querySelectorAll('details.voice-fold, details.memo').forEach((d) => {
         d.addEventListener('toggle', () => {
             const id = d.closest('.claude-card')?.dataset.cardId;
             if (!id)
@@ -1601,65 +1884,77 @@ function wireLog() {
     // (Playback + listened-marking now live on the persistent player bar — wirePlayerBar(), wired once
     // at boot — so there is no per-card <audio> to attach here.)
 }
-/** Soft-archive a remote/synced row: hide it immediately (optimistic), show the Undo snackbar, and
- *  commit the authenticated PATCH after the grace window unless she undoes. */
-async function archiveRow(id) {
-    // If the note being archived is the one playing in the bar, stop it (it's leaving the inbox).
-    if (state.playingId === id)
-        stopPlayer();
-    // Optimistically drop it from view + open the Undo window.
-    const pending = { ids: [id], label: 'Archived' };
-    state.pendingUndo = pending;
-    if (state.copiedId === id)
-        state.copiedId = null;
-    render();
-    buzz();
-    // Fire the PATCH right away (so it's archived server-side); Undo flips it back if she taps.
-    try {
-        const token = await getToken();
-        if (token)
-            await archiveCapture(token, id);
-        // Reflect in the local cache so a re-render after the window keeps it gone.
-        if (remoteCache)
-            remoteCache = remoteCache.filter((r) => r.id !== id);
-    }
-    catch (err) {
-        console.warn('[brain-dump] archive failed:', err);
-    }
-    scheduleUndoDismiss(pending);
+/** Soft-archive a remote/synced row — the single-🗑 form of archiveRows (same honesty rules). */
+function archiveRow(id) {
+    return archiveRows([id]);
 }
 /** v31 "clear day": archive every REMOTE row of one day-group in the current view (segment +
  *  session filter) in ONE batch PATCH, sharing the single-🗑 Undo path. Local-only unsent notes
  *  are deliberately skipped — they haven't reached the inbox yet, so "archive" would just destroy
  *  them; they stay visible in the list instead of silently vanishing. */
 async function archiveDay(dayKey) {
-    const items = buildLogRows();
-    let rows = rowsForSegment(items, state.segment ?? 'mine');
-    if (state.sessionFilter)
-        rows = rows.filter((it) => sessionKeyOf(it) === state.sessionFilter);
-    const ids = rows.filter((r) => dayKeyOf(r) === dayKey && r.remote).map((r) => r.id);
+    const ids = archivableInView()
+        .filter((r) => dayKeyOf(r) === dayKey)
+        .map((r) => r.id);
+    disarmTwoTap(); // consume the arm (+ clear its auto-disarm timer)
+    await archiveRows(ids);
+}
+/** v34: the ONE batch-archive path — used by 🗑, "clear day" and the tab's "Archive all" alike.
+ *  Honesty rules (v34 fix — the old version buzzed "Archived" even when NOTHING was written,
+ *  leaving her view and Claude's silently disagreeing):
+ *   1. Token FIRST. Logged out → say so and change nothing (fail loud, her rule).
+ *   2. Then hide optimistically + show the Undo snackbar (the snappy pattern she likes).
+ *   3. If the PATCH fails → RESTORE the rows, drop the snackbar, and say it plainly. The list
+ *      only ever shows a note as gone when the server agrees it's gone. */
+async function archiveRows(ids) {
     if (!ids.length)
         return;
+    const token = await getToken();
+    if (!token) {
+        // No session (or it can't refresh right now) — nothing was archived; say exactly that.
+        showToast(isLoggedIn() ? 'No connection — couldn’t archive' : 'Logged out — log in to archive');
+        if (state.screen === 'log')
+            render(); // surface the logged-out banner if the session died
+        return;
+    }
     if (state.playingId && ids.includes(state.playingId))
         stopPlayer();
-    const n = ids.length;
-    const pending = { ids, label: `${n} archived` };
+    const pending = { ids, label: ids.length === 1 ? 'Archived' : `${ids.length} archived` };
     state.pendingUndo = pending;
-    state.confirmingClearDay = null;
+    if (ids.length === 1 && state.copiedId === ids[0])
+        state.copiedId = null;
+    for (const id of ids)
+        archivingIds.add(id); // held out of view while the PATCH is in flight
     render();
     buzz();
+    const patch = setArchivedMany(token, ids, true);
+    archivePatchInFlight = patch.catch(() => undefined); // Undo awaits this; never rejects
+    let failed = false;
     try {
-        const token = await getToken();
-        if (token)
-            await setArchivedMany(token, ids, true);
+        await patch;
         const gone = new Set(ids);
         if (remoteCache)
             remoteCache = remoteCache.filter((r) => !gone.has(r.id));
+        scheduleUndoDismiss(pending);
     }
     catch (err) {
-        console.warn('[brain-dump] clear day failed:', err);
+        // The write did NOT land — put everything back and say so. Silent optimism here is the
+        // "app says archived, Claude still sees it live" lie the QA sweep flagged.
+        console.warn('[brain-dump] archive failed:', err);
+        if (state.pendingUndo === pending)
+            state.pendingUndo = null;
+        failed = true;
     }
-    scheduleUndoDismiss(pending);
+    finally {
+        for (const id of ids)
+            archivingIds.delete(id);
+        if (state.screen === 'log')
+            render();
+    }
+    // Toast AFTER the re-render — render() rebuilds #app (toast div included), so toasting first
+    // wiped the message before she could see it.
+    if (failed)
+        showToast('Couldn’t archive — network problem. Nothing was changed.');
 }
 let undoTimer = null;
 /** Close the Undo window after ~6s — the archive is now committed; clear the snackbar. Keyed by
@@ -1685,19 +1980,31 @@ async function undoArchive() {
         window.clearTimeout(undoTimer);
         undoTimer = null;
     }
-    state.pendingUndo = null;
-    render();
+    // v34.1 — if the archive PATCH is still in flight, WAIT for it: firing archived=false while
+    // archived=true is mid-air lets them land in either order (review-caught race).
+    if (archivePatchInFlight)
+        await archivePatchInFlight;
     try {
         const token = await getToken();
-        if (token) {
-            await setArchivedMany(token, pending.ids, false);
-            await refreshRemoteLog(); // pull them back into the list
-        }
+        if (!token)
+            throw new Error('no session/connection for un-archive');
+        await setArchivedMany(token, pending.ids, false);
+        // Only now is the restore TRUE — clear the snackbar and celebrate honestly.
+        state.pendingUndo = null;
+        await refreshRemoteLog(); // pull them back into the list
+        if (state.screen === 'log')
+            render();
+        showToast('Restored');
     }
     catch (err) {
+        // The un-archive did NOT land. Keep the snackbar (so Undo stays tappable) and say the truth —
+        // the old version toasted "Restored" no matter what (review-caught false claim).
         console.warn('[brain-dump] undo archive failed:', err);
+        scheduleUndoDismiss(pending); // re-arm the window rather than leaving it open forever
+        if (state.screen === 'log')
+            render();
+        showToast('Couldn’t restore — check your connection and tap Undo again.');
     }
-    showToast('Restored');
 }
 /** Flip a Claude note to listened: optimistic local-cache update + the authenticated PATCH.
  *  Never throws (offline just shows it again next read) — the UI has already moved on. */
@@ -1923,6 +2230,8 @@ function tryOpenPendingNote() {
         return; // inbox not loaded yet (or archived) — a later read retries
     state.screen = 'log';
     const seg = segmentOf(note);
+    if (state.segment !== seg)
+        disarmTwoTap(); // jumping to a note's tab is a view change — drop any arm
     if (state.segment !== seg || state.screen !== lastRenderedScreen) {
         state.segment = seg;
         render(); // rebuild on the right tab so the card is in the DOM
@@ -2212,6 +2521,9 @@ handleNoteDeepLink(); // ...unless a notification deep-link says open a specific
 render();
 // If opened by a Web Share (a WhatsApp voice note shared in), pick it up and transcribe.
 void ingestSharedAudio();
+// v34 — bring back a recording whose transcription failed before the app was last closed (the
+// durable IndexedDB copy). Quiet compose banner with Retry / Save file / Discard — never lost.
+void restorePendingAudio();
 // Flush any locally-saved captures that never reached the inbox (offline / left unsent).
 void syncPending().then((n) => {
     if (n > 0 && state.screen === 'log')

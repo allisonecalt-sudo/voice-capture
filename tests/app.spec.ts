@@ -139,9 +139,11 @@ async function installMocks(
         if (url.includes(host) && url.includes('voice_captures')) {
           const method = (init?.method ?? 'GET').toUpperCase();
           if (method === 'GET') {
-            // Authenticated inbox read-back (cross-device history). The app appends
-            // `archived=eq.false`; the canned rows already exclude archived ones. Reads from the
-            // mutable __remoteRows so a test can simulate a newly-arrived note between opens.
+            // Authenticated inbox read-back (cross-device history). v34: __getFail lets a test
+            // fail JUST the reads (the honest can't-load state) while `online` keeps governing
+            // writes — some legacy tests deliberately mix failing POSTs with working reads.
+            const getFail = (window as unknown as { __getFail?: boolean }).__getFail;
+            if (getFail) return Promise.reject(new TypeError('Failed to fetch'));
             const rows = (window as unknown as { __remoteRows: unknown[] }).__remoteRows ?? remote;
             return new Response(JSON.stringify(rows), {
               status: 200,
@@ -151,18 +153,29 @@ async function installMocks(
           if (method === 'PATCH') {
             // Authenticated UPDATE (markListened / archive / unarchive). Record on a separate
             // channel so tests can assert what was patched without polluting the insert log.
+            // v34: __patchFail lets a test fail JUST the writes while reads still work.
             const bodyText = typeof init?.body === 'string' ? init.body : '';
             const patches = (window as unknown as { __supabasePatches: unknown[] })
               .__supabasePatches;
             patches.push({ url, body: bodyText ? JSON.parse(bodyText) : null });
-            if (!online) return Promise.reject(new TypeError('Failed to fetch'));
+            const patchFail = (window as unknown as { __patchFail?: boolean }).__patchFail;
+            if (!online || patchFail) return Promise.reject(new TypeError('Failed to fetch'));
             return new Response(null, { status: 204 });
           }
           const bodyText = typeof init?.body === 'string' ? init.body : '';
           const posts = (window as unknown as { __supabasePosts: unknown[] }).__supabasePosts;
           posts.push(bodyText ? JSON.parse(bodyText) : null);
           if (!online) return Promise.reject(new TypeError('Failed to fetch'));
-          return new Response(null, { status: 201 });
+          // v34: __postStatus forces a specific INSERT status; on 409 the app now READS THE BODY
+          // (PostgREST 409 covers both PK-duplicate 23505 and FK-violation 23503), so the mock
+          // sends a real PG error code — __postCode overrides the default duplicate.
+          const forced = (window as unknown as { __postStatus?: number }).__postStatus;
+          if (typeof forced !== 'number') return new Response(null, { status: 201 });
+          const code = (window as unknown as { __postCode?: string }).__postCode ?? '23505';
+          return new Response(JSON.stringify({ code }), {
+            status: forced,
+            headers: { 'Content-Type': 'application/json' },
+          });
         }
         return realFetch(input as RequestInfo, init);
       }) as typeof window.fetch;
@@ -451,18 +464,19 @@ test.describe('log', () => {
     expect(remaining).toBe(1);
   });
 
-  test('Clear all needs two taps, then empties the log', async ({ page }) => {
+  // v34 — logged out, the ONLY notes present are unsynced ones that exist nowhere else. There is no
+  // "Archive all" here on purpose: archiving needs the server, and the old local-wipe destroyed
+  // exactly the notes with no backup. The loud banner tells her to log in; per-note 🗑 still works.
+  test('logged out, no "Archive all" is offered (nothing is archivable)', async ({ page }) => {
     await page.locator('#open-log').click();
-    await page.locator('#clear-all').click();
-    await expect(page.locator('#clear-all')).toHaveText('Tap again to clear all');
-    await expect(page.locator('.log-card')).toHaveCount(2); // not cleared yet
-    await page.locator('#clear-all').click();
-    await expect(page.locator('.log-empty')).toBeVisible();
+    await expect(page.locator('.log-card')).toHaveCount(2);
+    await expect(page.locator('#archive-all')).toHaveCount(0);
+    // The unsynced notes are still there — nothing silently destroyed them.
     const remaining = await page.evaluate(
       (k: string) => JSON.parse(window.localStorage.getItem(k) ?? '[]').length,
       HISTORY_KEY
     );
-    expect(remaining).toBe(0);
+    expect(remaining).toBe(2);
   });
 });
 
@@ -1129,6 +1143,509 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
       .poll(async () => (await patches(page)).some((p) => p.body?.archived === false))
       .toBe(true);
     await expect(page.locator('.claude-card')).toHaveCount(2);
+  });
+
+  // ── v34: per-tab "Archive all" (her ask: "make archive all per page") ──────────────────────────
+
+  test('"Archive all" needs two taps, batch-archives the tab, Undo restores it', async ({
+    page,
+  }) => {
+    await seedLoggedIn(page);
+    await expect(page.locator('.seg[data-seg="voice"]')).toHaveClass(/is-active/);
+    const archiveAll = page.locator('#archive-all');
+    await expect(archiveAll).toHaveText('Archive all');
+    // First tap ARMS and names the count + the unheard riding along — nothing archived yet.
+    await archiveAll.click();
+    await expect(archiveAll).toHaveText('Archive 1 · 1 unheard?');
+    await expect(page.locator('.claude-card')).toHaveCount(1);
+    // Second tap archives the tab: card gone, Undo up, PATCH archived=true.
+    await archiveAll.click();
+    await expect(page.locator('.claude-card')).toHaveCount(0);
+    // v34 unified the label with the single-🗑 path: one row says "Archived", not "1 archived".
+    await expect(page.locator('#undo-snackbar')).toContainText('Archived');
+    await expect
+      .poll(async () => (await patches(page)).some((p) => p.body?.archived === true))
+      .toBe(true);
+    // Undo brings it back — nothing was destroyed.
+    await page.locator('#undo-archive').click();
+    await expect
+      .poll(async () => (await patches(page)).some((p) => p.body?.archived === false))
+      .toBe(true);
+    await expect(page.locator('.claude-card')).toHaveCount(1);
+  });
+
+  test('"Archive all" is offered on My Notes too, and archives (not wipes) her own synced notes', async ({
+    page,
+  }) => {
+    await seedLoggedIn(page);
+    await page.locator('.seg[data-seg="mine"]').click();
+    await expect(page.locator('.log-text', { hasText: 'my own captured thought' })).toBeVisible();
+    const archiveAll = page.locator('#archive-all');
+    await expect(archiveAll).toHaveText('Archive all');
+    await archiveAll.click();
+    // Her own notes are never "unheard" — the armed copy is the plain count.
+    await expect(archiveAll).toHaveText('Archive 1?');
+    await archiveAll.click();
+    await expect(page.locator('.log-card')).toHaveCount(0);
+    // The proof it ARCHIVED rather than wiped: a real PATCH archived=true went to the server,
+    // addressed to her own note. (The old clear-all touched localStorage and nothing else.)
+    await expect
+      .poll(async () =>
+        (await patches(page)).some((p) => p.body?.archived === true && p.url.includes('mine1'))
+      )
+      .toBe(true);
+  });
+
+  test('arming "Archive all" then switching tabs disarms it (no cross-tab hot button)', async ({
+    page,
+  }) => {
+    await seedLoggedIn(page);
+    await expect(page.locator('.seg[data-seg="voice"]')).toHaveClass(/is-active/);
+    await page.locator('#archive-all').click();
+    await expect(page.locator('#archive-all')).toHaveText('Archive 1 · 1 unheard?');
+    // Switch to Info: the button must come back DISARMED, so one tap can't archive a set she
+    // never armed. It also re-counts for the tab she's actually on.
+    await page.locator('.seg[data-seg="info"]').click();
+    await expect(page.locator('#archive-all')).toHaveText('Archive all');
+    await expect(page.locator('.claude-card')).toHaveCount(1);
+    // And nothing was archived along the way.
+    expect((await patches(page)).filter((p) => p.body?.archived === true)).toHaveLength(0);
+  });
+
+  // ── v34.1 regressions: the review found the arm could carry across a PROGRAMMATIC view change
+  //    (a deep-link jump / nav), not just a tab tap. These guard the two confirmed paths. ─────────
+
+  test('v34.1: a deep-link jump (player-subject tap) cancels a hot "Archive all" — no carry onto the new tab', async ({
+    page,
+  }) => {
+    await seedLoggedIn(page);
+    // Play a Claude voice note so the persistent player bar holds it (currentNoteId = voice1).
+    await page.locator('.claude-card .card-play').first().click();
+    await expect(page.locator('#player-bar')).toBeVisible();
+    // Go to My Notes and ARM its "Archive all" (mine1 is remote → archivable).
+    await page.locator('.seg[data-seg="mine"]').click();
+    await page.locator('#archive-all').click();
+    await expect(page.locator('#archive-all')).toHaveText('Archive 1?');
+    // Tap the player-bar subject → jumps to the playing note's tab (Voice) via tryOpenPendingNote.
+    // BEFORE the fix: the Voice tab painted #archive-all ALREADY armed ("Archive 1 · 1 unheard?"),
+    // and one tap archived voice1 — a set she never armed. AFTER: it comes up disarmed.
+    await page.locator('#player-subject').click();
+    await expect(page.locator('.seg[data-seg="voice"]')).toHaveClass(/is-active/);
+    await expect(page.locator('#archive-all')).toHaveText('Archive all');
+    expect((await patches(page)).filter((p) => p.body?.archived === true)).toHaveLength(0);
+  });
+
+  test('v34.1: an armed day "Clear" does not survive leaving + reopening the Log onto another tab', async ({
+    page,
+  }) => {
+    await seedLoggedIn(page);
+    // Arm the Today day-clear on My Notes (mine1 is today + remote).
+    await page.locator('.seg[data-seg="mine"]').click();
+    const dayClear = page.locator('.day-clear').first();
+    await dayClear.click();
+    await expect(dayClear).toHaveText(/^Clear 1/);
+    // Leave the Log and reopen it — it default-lands back on Voice (the unheard note).
+    // BEFORE the fix: confirmingClearDay survived (no reset on nav, no auto-disarm timer) and,
+    // keyed by bare date, painted Voice's Today divider ALREADY armed. AFTER: it's disarmed.
+    await page.locator('#log-back').click();
+    await page.locator('#open-log').click();
+    await expect(page.locator('.seg[data-seg="voice"]')).toHaveClass(/is-active/);
+    await expect(page.locator('.day-clear').first()).toHaveText('Clear');
+    expect((await patches(page)).filter((p) => p.body?.archived === true)).toHaveLength(0);
+  });
+});
+
+test.describe('v34 — never-lose-a-note fixes', () => {
+  const SESSION_KEY = 'vc.session';
+
+  const seedSession = (page: import('@playwright/test').Page) =>
+    page.addInitScript((sk: string) => {
+      window.localStorage.setItem(
+        sk,
+        JSON.stringify({
+          access_token: 'fake-access',
+          refresh_token: 'fake-refresh',
+          expires_at: Date.now() + 3_600_000,
+          email: 'allisonecalt@gmail.com',
+        })
+      );
+    }, SESSION_KEY);
+
+  test('a typed thought POSTs with its local UUID as the row id (idempotent send)', async ({
+    page,
+  }) => {
+    await page.addInitScript(() => window.localStorage.clear());
+    await installMocks(page);
+    await page.goto('/');
+    await page.locator('#draft').fill('idempotent thought');
+    await page.locator('#compose-action').click();
+    await expect.poll(async () => (await posts(page)).length).toBe(1);
+    const sent = (await posts(page))[0] as { id?: string };
+    const stored = await page.evaluate(
+      () => JSON.parse(window.localStorage.getItem('vc.history') ?? '[]') as { id: string }[]
+    );
+    // The row id IS the local item id — a lost-response retry collides instead of duplicating.
+    expect(sent.id).toBe(stored[0].id);
+    expect(sent.id).toMatch(/^[0-9a-f-]{36}$/i);
+  });
+
+  test('a 409 on send (this note already landed) marks it synced — no duplicate, no stuck retry', async ({
+    page,
+  }) => {
+    await page.addInitScript(() => window.localStorage.clear());
+    await page.addInitScript(() => {
+      (window as unknown as { __postStatus: number }).__postStatus = 409;
+    });
+    await installMocks(page);
+    await page.goto('/');
+    await page.locator('#draft').fill('already landed once');
+    await page.locator('#compose-action').click();
+    await expect.poll(async () => (await posts(page)).length).toBe(1);
+    // 409 = the note is already in the inbox from a prior try → treated as delivered.
+    await expect
+      .poll(async () =>
+        (
+          (await page.evaluate(
+            () =>
+              JSON.parse(window.localStorage.getItem('vc.history') ?? '[]') as {
+                synced: boolean;
+              }[]
+          )) as { synced: boolean }[]
+        ).map((i) => i.synced)
+      )
+      .toEqual([true]);
+  });
+
+  test('a failed recording SURVIVES closing the app — restored with Retry / Save file on next open', async ({
+    page,
+  }) => {
+    await setKey(page);
+    await installMocks(page, FAKE_TRANSCRIPT, true, [], 4); // every attempt fails → held
+    await page.goto('/');
+    await page.locator('#compose-action').click(); // mic
+    await page.locator('#stop-btn').click();
+    await expect(page.locator('#retry-voice')).toBeVisible();
+    await expect(page.locator('#download-voice')).toBeVisible(); // the escape hatch exists
+    // "Close the app" (reload = the eviction case): the recording must come BACK.
+    await page.reload();
+    await expect(page.locator('#retry-voice')).toBeVisible();
+    await expect(page.locator('.error-banner')).toContainText('recording from earlier');
+    // "Gemini has recovered" — the reload reset the mock's fail counter, so jump it past the
+    // failing window before Retry (otherwise the first 4 calls fail again by mock design).
+    await page.evaluate(() => {
+      (window as unknown as { __geminiCalls: number }).__geminiCalls = 99;
+    });
+    await page.locator('#retry-voice').click();
+    await expect.poll(async () => (await posts(page)).length).toBe(1);
+    await expect(page.locator('#retry-voice')).toHaveCount(0);
+  });
+
+  test('archive failure puts the note back and says so — never a false "Archived"', async ({
+    page,
+  }) => {
+    await seedSession(page);
+    await installMocks(page, FAKE_TRANSCRIPT, true, [
+      {
+        id: 'v34a1',
+        transcript: 'note that will fail to archive',
+        source: 'text',
+        created_at: new Date().toISOString(),
+        from_claude: true,
+        audio_url: 'https://x/storage/v1/object/public/voice-notes/v34a1.mp3',
+        listened: false, // unheard → the Log default-lands on Voice, where this card lives
+      },
+    ]);
+    await page.goto('/');
+    await page.locator('#open-log').click();
+    await expect(page.locator('.claude-card')).toHaveCount(1);
+    await page.evaluate(() => {
+      (window as unknown as { __patchFail: boolean }).__patchFail = true;
+    });
+    await page.locator('.log-archive[data-archive]').first().click();
+    // The PATCH failed → the card is restored, no Undo snackbar pretends it worked.
+    await expect(page.locator('.claude-card')).toHaveCount(1);
+    await expect(page.locator('#undo-snackbar')).toHaveCount(0);
+    await expect(page.locator('#toast')).toContainText('Couldn’t archive');
+  });
+
+  test('offline + logged in: the Log says can’t-load — never "Nothing captured yet"', async ({
+    page,
+  }) => {
+    await seedSession(page);
+    await page.addInitScript(() => {
+      (window as unknown as { __getFail: boolean }).__getFail = true; // inbox reads fail (offline)
+    });
+    await installMocks(page, FAKE_TRANSCRIPT, false, []);
+    await page.goto('/');
+    await page.locator('#open-log').click();
+    // The honest banner (with Retry), not a green "✓ Synced" over a lie.
+    await expect(page.locator('#log-retry')).toBeVisible();
+    await expect(page.locator('#log-sync')).toHaveCount(0);
+    await expect(page.locator('.log-empty')).toContainText('Can’t load right now');
+  });
+
+  test('a network blip during token refresh keeps the session; a real rejection ends it', async ({
+    page,
+  }) => {
+    await installMocks(page);
+    await page.goto('/');
+    // Blip: refresh fetch REJECTS (offline) → token null but the session is KEPT.
+    const blip = await page.evaluate(async () => {
+      window.localStorage.setItem(
+        'vc.session',
+        JSON.stringify({
+          access_token: 'a',
+          refresh_token: 'r',
+          expires_at: Date.now() - 1000,
+          email: 'x@y.z',
+        })
+      );
+      const realFetch = window.fetch;
+      window.fetch = () => Promise.reject(new TypeError('Failed to fetch'));
+      const mod = await import('./dist/auth.js');
+      const token = await mod.getToken();
+      window.fetch = realFetch;
+      return { token, sessionKept: window.localStorage.getItem('vc.session') !== null };
+    });
+    expect(blip.token).toBeNull();
+    expect(blip.sessionKept).toBe(true);
+    // Real rejection: refresh gets a 401 → the session is cleared (genuinely dead).
+    const rejected = await page.evaluate(async () => {
+      const realFetch = window.fetch;
+      window.fetch = async () =>
+        new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 401 });
+      const mod = await import('./dist/auth.js');
+      const token = await mod.getToken();
+      window.fetch = realFetch;
+      return { token, sessionKept: window.localStorage.getItem('vc.session') !== null };
+    });
+    expect(rejected.token).toBeNull();
+    expect(rejected.sessionKept).toBe(false);
+  });
+
+  test('an open Info memo stays open through a re-render (mark listened)', async ({ page }) => {
+    await seedSession(page);
+    await installMocks(page, FAKE_TRANSCRIPT, true, [
+      {
+        id: 'memo1',
+        title: 'A memo to read slowly',
+        transcript: 'A memo to read slowly\nwith a body worth keeping open.',
+        source: 'text',
+        created_at: new Date().toISOString(),
+        from_claude: true,
+        audio_url: null,
+        listened: false,
+      },
+    ]);
+    await page.goto('/');
+    await page.locator('#open-log').click();
+    await expect(page.locator('.seg[data-seg="info"]')).toHaveClass(/is-active/);
+    await page.locator('details.memo > summary').click();
+    await expect(page.locator('details.memo')).toHaveAttribute('open', '');
+    await page.locator('.mark-listened').click(); // triggers persistListened + re-render
+    await expect(page.locator('details.memo')).toHaveAttribute('open', ''); // still open
+  });
+
+  test('logged out, Settings offers no "Notify me" (notifications are login-gated)', async ({
+    page,
+  }) => {
+    await page.addInitScript(() => window.localStorage.clear());
+    await installMocks(page);
+    await page.goto('/');
+    await page.locator('#open-log').click();
+    await page.locator('#open-settings').click();
+    await expect(page.locator('#notify-btn')).toHaveCount(0);
+  });
+
+  // ── v34.1 — regressions for the adversarial review's confirmed catches ────────────────────────
+
+  test('a 409 FK-violation (reply to a deleted note) is NOT success: transcript survives as a plain capture', async ({
+    page,
+  }) => {
+    // Seed a locally-queued REPLY whose parent note no longer exists server-side.
+    await page.addInitScript(() => {
+      window.localStorage.setItem(
+        'vc.history',
+        JSON.stringify([
+          {
+            id: '11111111-2222-4333-8444-555555555555',
+            transcript: 'my reply to a note that got deleted',
+            createdAt: new Date().toISOString(),
+            synced: false,
+            source: 'voice',
+            replyTo: 'deadbeef-dead-4bee-8fde-adbeefdead00',
+            replySnippet: 'the vanished parent',
+          },
+        ])
+      );
+      (window as unknown as { __postStatus: number }).__postStatus = 409;
+      (window as unknown as { __postCode: string }).__postCode = '23503'; // FK violation
+    });
+    await installMocks(page);
+    await page.goto('/');
+    // First sync pass: the 409/23503 must NOT mark it synced (the old code did → the note was
+    // pruned into nothingness). It must instead drop the dead thread context.
+    await expect.poll(async () => (await posts(page)).length).toBeGreaterThan(0);
+    await expect
+      .poll(async () =>
+        page.evaluate(() => {
+          const items = JSON.parse(window.localStorage.getItem('vc.history') ?? '[]') as {
+            synced: boolean;
+            replyTo?: string;
+          }[];
+          return { synced: items[0]?.synced, hasReply: items[0]?.replyTo != null };
+        })
+      )
+      .toEqual({ synced: false, hasReply: false });
+    // Server recovers (inserts accepted again) → the next sync delivers it as a PLAIN capture.
+    await page.evaluate(() => {
+      delete (window as unknown as { __postStatus?: number }).__postStatus;
+    });
+    await page.locator('#open-log').click(); // open-log triggers syncPending
+    await expect
+      .poll(async () => {
+        const all = await posts(page);
+        const last = all[all.length - 1] as { reply_to?: string; transcript?: string };
+        return last?.reply_to == null && last?.transcript === 'my reply to a note that got deleted';
+      })
+      .toBe(true);
+  });
+
+  test('a NEW recording succeeding does not destroy a held failed one', async ({ page }) => {
+    await setKey(page);
+    await installMocks(page, FAKE_TRANSCRIPT, true, [], 4); // first 4 Gemini calls fail
+    await page.goto('/');
+    // Recording A fails → held with the safety banner.
+    await page.locator('#compose-action').click();
+    await page.locator('#stop-btn').click();
+    await expect(page.locator('#retry-voice')).toBeVisible();
+    // Recording B succeeds (mock now past its failing window).
+    await page.locator('#compose-action').click();
+    await page.locator('#stop-btn').click();
+    await expect.poll(async () => (await posts(page)).length).toBe(1); // B saved
+    // A is STILL held — banner and Retry intact (the old code wiped A here, silently).
+    await expect(page.locator('#retry-voice')).toBeVisible();
+    await expect(page.locator('#download-voice')).toBeVisible();
+  });
+
+  test('Undo failure keeps the snackbar and never claims "Restored"', async ({ page }) => {
+    await seedSession(page);
+    await installMocks(page, FAKE_TRANSCRIPT, true, [
+      {
+        id: 'u1',
+        transcript: 'note to archive then fail to restore',
+        source: 'text',
+        created_at: new Date().toISOString(),
+        from_claude: true,
+        audio_url: 'https://x/storage/v1/object/public/voice-notes/u1.mp3',
+        listened: false,
+      },
+    ]);
+    await page.goto('/');
+    await page.locator('#open-log').click();
+    await page.locator('.log-archive[data-archive]').first().click(); // archive lands (mock 204)
+    await expect(page.locator('#undo-snackbar')).toBeVisible();
+    await page.evaluate(() => {
+      (window as unknown as { __patchFail: boolean }).__patchFail = true; // now writes fail
+    });
+    await page.locator('#undo-archive').click();
+    // The restore did NOT land: honest toast, snackbar still there so she can try again.
+    await expect(page.locator('#toast')).toContainText('Couldn’t restore');
+    await expect(page.locator('#undo-snackbar')).toBeVisible();
+    // And the note did NOT sneak back into the list (server still has it archived).
+    await expect(page.locator('.claude-card')).toHaveCount(0);
+  });
+
+  test('a failed REFRESH with notes already loaded shows the stale banner, not "✓ Synced"', async ({
+    page,
+  }) => {
+    await seedSession(page);
+    await installMocks(page, FAKE_TRANSCRIPT, true, [
+      {
+        id: 's1',
+        transcript: 'a loaded note',
+        source: 'text',
+        created_at: new Date().toISOString(),
+        from_claude: false,
+      },
+    ]);
+    await page.goto('/');
+    await page.locator('#open-log').click();
+    await expect(page.locator('#log-sync')).toContainText('Synced'); // first read landed
+    await page.evaluate(() => {
+      (window as unknown as { __getFail: boolean }).__getFail = true; // network drops
+    });
+    await page.locator('#log-refresh').click();
+    await expect(page.locator('#log-retry')).toContainText('can’t refresh right now');
+    // Her notes are still shown (last loaded list) — stale beats blank.
+    await expect(page.locator('.log-text', { hasText: 'a loaded note' })).toBeVisible();
+  });
+
+  test('splitWavBlob refuses a stereo WAV instead of garbling it', async ({ page }) => {
+    await installMocks(page);
+    await page.goto('/');
+    const threw = await page.evaluate(async () => {
+      const mod = await import('./dist/wav.js');
+      // Hand-build a STEREO 16-bit WAV header (data at offset 36, like encodeWav's layout).
+      const buf = new ArrayBuffer(44 + 1000);
+      const v = new DataView(buf);
+      const ws = (o: number, s: string) => {
+        for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i));
+      };
+      ws(0, 'RIFF');
+      v.setUint32(4, 36 + 1000, true);
+      ws(8, 'WAVE');
+      ws(12, 'fmt ');
+      v.setUint32(16, 16, true);
+      v.setUint16(20, 1, true);
+      v.setUint16(22, 2, true); // STEREO
+      v.setUint32(24, 16000, true);
+      v.setUint32(28, 16000 * 4, true);
+      v.setUint16(32, 4, true);
+      v.setUint16(34, 16, true);
+      ws(36, 'data');
+      v.setUint32(40, 1000, true);
+      try {
+        await mod.splitWavBlob(new Blob([buf], { type: 'audio/wav' }), 64);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    expect(threw).toBe(true);
+  });
+
+  test('splitWavBlob slices a long WAV into valid, complete chunks', async ({ page }) => {
+    await installMocks(page);
+    await page.goto('/');
+    const result = await page.evaluate(async () => {
+      const mod = await import('./dist/wav.js');
+      const samples = new Float32Array(200_000); // 400,000 PCM bytes
+      for (let i = 0; i < samples.length; i++) samples[i] = Math.sin(i / 7) * 0.4;
+      const whole = mod.encodeWav(samples, 16000);
+      const chunks: Blob[] = await mod.splitWavBlob(whole, 64_000);
+      const headers = await Promise.all(
+        chunks.map(async (c: Blob) => {
+          const v = new DataView(await c.arrayBuffer());
+          return {
+            riff: v.getUint32(0, false),
+            rate: v.getUint32(24, true),
+            dataLen: v.getUint32(40, true),
+            size: c.size,
+          };
+        })
+      );
+      return { count: chunks.length, headers, wholeSize: whole.size };
+    });
+    // 400,000 bytes at ≤64,000/chunk → 7 chunks; every chunk a valid 16 kHz RIFF; no byte lost.
+    expect(result.count).toBe(7);
+    for (const h of result.headers) {
+      expect(h.riff).toBe(0x52494646); // 'RIFF'
+      expect(h.rate).toBe(16000);
+      expect(h.size).toBe(44 + h.dataLen); // header consistent with actual blob size
+    }
+    const totalData = result.headers.reduce((s, h) => s + h.dataLen, 0);
+    expect(totalData).toBe(result.wholeSize - 44); // all PCM accounted for
   });
 });
 

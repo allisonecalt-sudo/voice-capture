@@ -15,6 +15,10 @@
 //          tag rides along IN the INSERT body. The send is deferred (by app.ts) until she leaves
 //          the result screen, so the final tag is the one that lands.
 // BUILT:  HistoryItem type, load/save store, addCapture, deleteCapture, setCategory, syncPending.
+//         NO mass-wipe primitive on purpose (v34): logged in, pruneSyncedLocal has already dropped
+//         every synced copy, so this buffer holds ONLY notes that reached nowhere else — wiping it
+//         destroyed exactly what had no backup. "Clear" is now an Undo-able server-side ARCHIVE
+//         (app.ts archiveRows); per-note local delete is deleteCapture.
 // NEXT:   none — stable. If history ever needs cross-device, that's an authed read surface.
 
 import { saveCapture, type Category, type CaptureSource, type ReplyContext } from './supabase.js';
@@ -117,16 +121,6 @@ export function deleteCapture(id: string): void {
   saveHistory(items);
 }
 
-/** Wipe the entire local log (localStorage only — never touches Supabase; anon can't delete
- *  the inbox rows anyway, and Claude clears those server-side after routing). */
-export function clearHistory(): void {
-  try {
-    localStorage.removeItem(HISTORY_KEY);
-  } catch {
-    // storage disabled — nothing we can do; the next saveHistory will overwrite anyway.
-  }
-}
-
 /**
  * Set (or clear, with null) the routing tag on a local history item and return the updated
  * item (or null if no such item). LOCAL ONLY — writes localStorage and never touches the
@@ -154,8 +148,29 @@ export function setCategory(id: string, category: Category | null): HistoryItem 
  * The item's `category` rides along in the INSERT body so the tag lands WITH the row — there is
  * no later PATCH (anon can't update). Resilient by design: a failed item just stays unsynced and
  * is retried next time. Returns the number of items newly synced this pass.
+ *
+ * v34 — race-proofed, three ways. The old version could ERASE a note captured mid-sync: it
+ * wrote its whole stale snapshot back over the store after awaiting the network, wiping any
+ * item addCapture had added meanwhile (gone locally, never sent — with "Saved ✓" already shown).
+ *  1. SINGLE-FLIGHT: a second call while one is running returns the same promise, so two loops
+ *     can never double-send the same items.
+ *  2. MARK-BY-ID: each success re-reads the live store and flips just that id — a stale snapshot
+ *     is never written back, so a mid-sync capture survives.
+ *  3. IDEMPOTENT SEND: the item's UUID rides as the row id, so a retry of a send whose response
+ *     was lost 409s server-side instead of duplicating the note in Claude's inbox.
  */
-export async function syncPending(): Promise<number> {
+let syncInFlight: Promise<number> | null = null;
+
+export function syncPending(): Promise<number> {
+  if (syncInFlight) return syncInFlight;
+  syncInFlight = doSyncPending().finally(() => {
+    syncInFlight = null;
+  });
+  return syncInFlight;
+}
+
+async function doSyncPending(): Promise<number> {
+  // Snapshot is for ITERATION only — never written back (see markSynced).
   const items = loadHistory();
   let syncedCount = 0;
   for (const item of items) {
@@ -169,15 +184,53 @@ export async function syncPending(): Promise<number> {
               sessionId: item.sessionId ?? null,
             }
           : undefined;
-      await saveCapture(item.transcript, item.durationSeconds, item.category, item.source, reply);
-      item.synced = true;
+      await saveCapture(
+        item.transcript,
+        item.durationSeconds,
+        item.category,
+        item.source,
+        reply,
+        item.id
+      );
+      markSynced(item.id);
       syncedCount++;
-    } catch {
-      // Offline / Supabase down: leave it unsynced for the next attempt.
+    } catch (err) {
+      // 23503 = this is a REPLY whose parent note was deleted server-side (Claude consumed it /
+      // a purge). The insert was rejected and always will be — retrying forever would strand the
+      // note unsynced until the phone buffer eventually dropped it. Strip the dead thread context
+      // (fresh-read write, same discipline as markSynced) so the NEXT sync pass delivers it as a
+      // plain capture: the transcript survives, only the threading is lost.
+      if ((err as Error & { pgCode?: string }).pgCode === '23503' && item.replyTo != null) {
+        stripReplyContext(item.id);
+      }
+      // Anything else (offline / Supabase down): leave it unsynced for the next attempt.
     }
   }
-  if (syncedCount > 0) saveHistory(items);
   return syncedCount;
+}
+
+/** Remove the reply-thread fields from ONE stored item (its parent note no longer exists), so it
+ *  can sync as a plain capture. Fresh read → targeted write — never touches other items. */
+function stripReplyContext(id: string): void {
+  const items = loadHistory();
+  const item = items.find((i) => i.id === id);
+  if (item && item.replyTo != null) {
+    delete item.replyTo;
+    delete item.replySnippet;
+    delete item.sessionId;
+    saveHistory(items);
+  }
+}
+
+/** Flip ONE item to synced against the CURRENT store (fresh read → targeted write). This is the
+ *  only write syncPending ever makes, so notes captured while a send was in flight are untouched. */
+function markSynced(id: string): void {
+  const items = loadHistory();
+  const item = items.find((i) => i.id === id);
+  if (item && !item.synced) {
+    item.synced = true;
+    saveHistory(items);
+  }
 }
 
 /**

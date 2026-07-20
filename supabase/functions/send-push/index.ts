@@ -98,9 +98,22 @@ Deno.serve(async (req: Request): Promise<Response> => {
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
   );
 
+  // v34 privacy — send ONLY to Allison's devices, belt + braces with the RLS gate: the table's
+  // INSERT policy is authenticated-only as of 2026-07-20 (anon INSERT dropped — the app URL is
+  // public, and an anon-writable table let a stranger register their device, even claiming her
+  // email). This allowlist is the second layer; override via the PUSH_ALLOWED_EMAILS secret
+  // (comma-separated). Rows with a null/other user_email are never pushed to.
+  const allowedEmails = (
+    Deno.env.get('PUSH_ALLOWED_EMAILS') ?? 'allisonecalt@gmail.com,hopeandemunah@gmail.com'
+  )
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+
   const { data: subs, error } = await supabase
     .from('push_subscriptions')
-    .select('id,endpoint,p256dh,auth');
+    .select('id,endpoint,p256dh,auth,user_email')
+    .in('user_email', allowedEmails);
   if (error) {
     console.error('[send-push] read subscriptions failed:', error.message);
     return json({ error: 'read subscriptions failed' }, 200); // 200 so the webhook isn't retried forever

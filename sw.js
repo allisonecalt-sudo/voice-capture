@@ -13,7 +13,7 @@
 // BUILT:  install/activate/fetch with the two strategies above + handleShareTarget().
 // NEXT:   bump VERSION when shipping a new build.
 
-const VERSION = 'voice-capture-v33';
+const VERSION = 'voice-capture-v34';
 const SHELL_CACHE = `${VERSION}-shell`;
 
 // Web Share Target hand-off cache. When a voice note is shared INTO the app (Android:
@@ -24,7 +24,11 @@ const SHELL_CACHE = `${VERSION}-shell`;
 const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 
-const SHELL_ASSETS = [
+// v34.1 — the shell is cached in two tiers. CRITICAL = the module graph + page: if ANY of these
+// fails to cache, the install must FAIL (rejecting keeps the old SW + old cache serving), because
+// activate() deletes the previous shell cache — a half-cached new shell would boot offline to a
+// blank screen (review-caught). NICE = icons/manifest: tolerated individually, cosmetic offline.
+const CRITICAL_ASSETS = [
   './',
   './index.html',
   './styles.css',
@@ -33,25 +37,29 @@ const SHELL_ASSETS = [
   './dist/gemini.js',
   './dist/supabase.js',
   './dist/history.js',
+  './dist/auth.js',
+  './dist/pending-audio.js',
   './dist/push.js',
-  './manifest.webmanifest',
-  './icon.svg',
-  './icon-192.png',
-  './icon-512.png',
-  './icon-maskable-512.png',
 ];
+const NICE_ASSETS = ['./manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
+const SHELL_ASSETS = CRITICAL_ASSETS.concat(NICE_ASSETS);
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(SHELL_CACHE).then((cache) =>
-      // Individual adds so one missing asset doesn't abort the whole install.
-      Promise.all(
-        SHELL_ASSETS.map((url) =>
-          cache.add(url).catch((err) => {
-            console.warn('[SW] Failed to cache shell asset', url, err);
-          })
-        )
-      )
+      Promise.all([
+        // Critical: all-or-nothing. A rejection here aborts the install; the old build keeps
+        // serving until a complete new shell can be cached.
+        Promise.all(CRITICAL_ASSETS.map((url) => cache.add(url))),
+        // Nice-to-have: individual failures logged, never abort.
+        Promise.all(
+          NICE_ASSETS.map((url) =>
+            cache.add(url).catch((err) => {
+              console.warn('[SW] Failed to cache shell asset', url, err);
+            })
+          )
+        ),
+      ])
     )
   );
   self.skipWaiting();
@@ -137,12 +145,17 @@ function isShellRequest(url) {
 // stale cached build can't strand the app. CSS/icons stay cache-first.
 function isCodeRequest(url, request) {
   if (request.mode === 'navigate') return true;
+  // v34: auth.js + pending-audio.js joined both lists — auth.js was missing entirely, which
+  // could boot a just-updated app to a BLANK screen on an offline first-open (one uncached
+  // startup module = the whole ES module graph fails to load).
   return (
     url.pathname.endsWith('/dist/app.js') ||
     url.pathname.endsWith('/dist/wav.js') ||
     url.pathname.endsWith('/dist/gemini.js') ||
     url.pathname.endsWith('/dist/supabase.js') ||
     url.pathname.endsWith('/dist/history.js') ||
+    url.pathname.endsWith('/dist/auth.js') ||
+    url.pathname.endsWith('/dist/pending-audio.js') ||
     url.pathname.endsWith('/dist/push.js') ||
     url.pathname.endsWith('/index.html')
   );

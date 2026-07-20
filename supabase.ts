@@ -52,6 +52,7 @@ export interface ReplyContext {
 }
 
 interface CapturePayload {
+  id?: string;
   transcript: string;
   source: CaptureSource;
   duration_seconds?: number;
@@ -60,6 +61,12 @@ interface CapturePayload {
   reply_snippet?: string;
   session_id?: string;
 }
+
+// v34 — client-supplied row id (idempotent sends). The local HistoryItem id is already a UUID
+// (crypto.randomUUID); sending it as the row's PRIMARY KEY makes a retried send collide (409)
+// instead of inserting the same note twice. Only UUID-shaped ids ride along — the rare
+// timestamp-fallback id would fail the uuid cast and 400 the whole insert.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * POST one transcript to the voice_captures inbox. Insert-only: anon has no SELECT, so we send
@@ -70,6 +77,15 @@ interface CapturePayload {
  * @param category         optional routing tag ('todo' | 'thought'); omitted when undefined
  * @param source           how it entered the app ('voice' | 'text'); defaults to 'voice'
  * @param reply            optional thread context (parent id + snippet) when this is a reply
+ * @param clientId         v34: the local HistoryItem UUID, sent as the row id so a RETRY of a
+ *                         send whose response was lost can't create a duplicate — the second
+ *                         insert 409s on the PK and is treated as "already landed" (success).
+ *                         KNOWN RESIDUAL (accepted, v34 review): if the response was lost AND
+ *                         Claude consumed-and-DELETED the row before the retry, the retry
+ *                         re-inserts it (no tombstone exists client-side to tell "deleted after
+ *                         landing" from "never landed"). Worst case: a session reads a reply
+ *                         twice. Rare double-fault window, no data loss — watchers should
+ *                         tolerate a re-seen reply id.
  * @throws on any non-2xx (or network failure) so the caller can mark it "will sync".
  */
 export async function saveCapture(
@@ -77,9 +93,11 @@ export async function saveCapture(
   durationSeconds?: number,
   category?: Category,
   source: CaptureSource = 'voice',
-  reply?: ReplyContext
+  reply?: ReplyContext,
+  clientId?: string
 ): Promise<void> {
   const payload: CapturePayload = { transcript, source };
+  if (clientId && UUID_RE.test(clientId)) payload.id = clientId;
   if (typeof durationSeconds === 'number' && Number.isFinite(durationSeconds)) {
     payload.duration_seconds = Math.round(durationSeconds);
   }
@@ -103,6 +121,21 @@ export async function saveCapture(
     body: JSON.stringify(payload),
   });
 
+  // 409 handling MUST read the body: PostgREST returns 409 for MORE than one thing.
+  //   23505 (unique_violation on our client-supplied PK) = this exact note already landed on a
+  //          previous try whose response was lost → the send SUCCEEDED, return quietly.
+  //   23503 (foreign_key_violation, reply_to → a parent note that's been deleted server-side)
+  //          = NOTHING was inserted. Treating this as success destroyed the reply (marked synced
+  //          → pruned) — the exact bug the v34 review caught, live-verified. It must THROW, with
+  //          the code attached so the caller can strip the dead reply_to and resend as a plain
+  //          capture (the transcript is what must survive; the threading is expendable).
+  if (res.status === 409 && payload.id) {
+    const body = (await res.json().catch(() => ({}))) as { code?: string };
+    if (body.code === '23505') return; // duplicate of OUR row id — already landed, success
+    const err = new Error(`Supabase save failed: HTTP 409 (${body.code ?? 'unknown'})`);
+    (err as Error & { pgCode?: string }).pgCode = body.code;
+    throw err;
+  }
   if (!res.ok) {
     throw new Error(`Supabase save failed: HTTP ${res.status}`);
   }

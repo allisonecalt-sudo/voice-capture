@@ -111,6 +111,55 @@ export function blobToBase64(blob) {
 export function wavByteLength(sampleCount) {
     return 44 + sampleCount * 2;
 }
+/**
+ * v34 — split one long WAV blob into several self-contained WAV blobs, each with ≤ maxDataBytes
+ * of PCM (cut on an even byte so a 16-bit sample is never torn in half). Re-headers every chunk,
+ * reading the sample rate out of the source header so the chunks stay faithful. Returns [blob]
+ * untouched when it already fits. This is what lets a LONG brain-dump transcribe at all: Gemini's
+ * inline request cap rejects a big single payload, so the app transcribes the dump in parts and
+ * joins the transcripts — instead of dead-ending the exact note she'd least want to lose.
+ * Only valid for the app's own PCM WAV encoding (RIFF/WAVE, data chunk at offset 44 — what
+ * encodeWav writes). Throws on anything that isn't that shape.
+ */
+export async function splitWavBlob(blob, maxDataBytes) {
+    if (blob.size <= 44 + maxDataBytes)
+        return [blob];
+    const buf = await blob.arrayBuffer();
+    const view = new DataView(buf);
+    if (view.getUint32(0, false) !== 0x52494646 /* 'RIFF' */ ||
+        view.getUint32(8, false) !== 0x57415645 /* 'WAVE' */ ||
+        view.getUint32(36, false) !== 0x64617461 /* 'data' at 36 — encodeWav's fixed layout */ ||
+        view.getUint16(20, true) !== 1 /* PCM */ ||
+        view.getUint16(22, true) !== 1 /* mono — a stereo file re-headered as mono would garble */ ||
+        view.getUint16(34, true) !== 16 /* 16-bit — anything else breaks the even-byte cut math */) {
+        throw new Error('splitWavBlob: not a canonical PCM WAV (this app only splits its own WAVs)');
+    }
+    const sampleRate = view.getUint32(24, true);
+    const pcm = new Uint8Array(buf, 44);
+    const step = maxDataBytes - (maxDataBytes % 2); // even cut — never tear a 16-bit sample
+    const chunks = [];
+    for (let start = 0; start < pcm.length; start += step) {
+        const slice = pcm.subarray(start, Math.min(start + step, pcm.length));
+        const out = new ArrayBuffer(44 + slice.length);
+        const outView = new DataView(out);
+        writeString(outView, 0, 'RIFF');
+        outView.setUint32(4, 36 + slice.length, true);
+        writeString(outView, 8, 'WAVE');
+        writeString(outView, 12, 'fmt ');
+        outView.setUint32(16, 16, true);
+        outView.setUint16(20, 1, true);
+        outView.setUint16(22, 1, true);
+        outView.setUint32(24, sampleRate, true);
+        outView.setUint32(28, sampleRate * 2, true);
+        outView.setUint16(32, 2, true);
+        outView.setUint16(34, 16, true);
+        writeString(outView, 36, 'data');
+        outView.setUint32(40, slice.length, true);
+        new Uint8Array(out, 44).set(slice);
+        chunks.push(new Blob([out], { type: 'audio/wav' }));
+    }
+    return chunks;
+}
 function writeString(view, offset, str) {
     for (let i = 0; i < str.length; i++) {
         view.setUint8(offset + i, str.charCodeAt(i));

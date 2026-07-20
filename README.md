@@ -3,7 +3,7 @@
 **WHAT:** A one-screen phone app that is Allison's **door to Claude** — a place to fire off a
 current thought. Open it and you're on a compose screen with one bar: **type** a thought and tap
 **send**, or tap the **mic** to speak it. Typed thoughts go straight to her Claude inbox; voice
-notes transcribe first and she chooses **Save** or **Discard**. A minimal **Log** lists what she
+notes transcribe and **auto-save** the same way. A minimal **Log** lists what she
 saved; **Settings** holds the (voice-only) Gemini key.
 
 **WHY:** This is modelled on how she fires notes into WhatsApp-to-self and brings them to Claude.
@@ -17,9 +17,11 @@ frictionless and never lost; Claude reads the inbox and routes each item to its 
 - **One morphing action button** (WhatsApp/Telegram pattern): 🎤 **mic** when the field is empty,
   ➤ **send** the moment she types. Same position, never two competing buttons.
 - **Typing needs no key.** Only voice transcription uses the Gemini key (localStorage, device-only).
-- **Voice is opt-in to save.** A transcript drops into an editable field; she taps **Save to Claude**
-  or **Discard**. A mishear is fixable before saving. (Voice-to-text can hallucinate proper nouns;
-  this gate is deliberate.)
+- **Voice auto-saves.** A finished recording transcribes and lands in the inbox with no review
+  gate — her call, 2026-06-23: _"its fine autsave i dont rlly look."_ (Supersedes the June-16
+  opt-in Save/Discard design; reaching Claude matters more than pre-review. Claude flags garbled
+  words instead of her catching them at capture time.) **Discard** still exists while recording
+  and on a failed transcription — auto-save is for successes, never a nag.
 - **Captures land in Supabase `voice_captures`** (project `hpiyvnfhoqnnnotrmwaz`), tagged
   `source = 'text' | 'voice'`. **Anon RLS is INSERT-ONLY** — the phone writes, only Claude's service
   key reads. No login, no friction; transcripts aren't publicly readable.
@@ -55,15 +57,18 @@ frictionless and never lost; Claude reads the inbox and routes each item to its 
 2. **Type a thought** → tap the blue **send** (➤). It's in your Claude inbox. The field clears,
    ready for the next thought.
 3. **Speak a thought** → tap the **mic** (🎤) → a recording strip shows a live timer + waveform →
-   tap **Stop & transcribe** → the transcript appears, editable → **Save to Claude** or **Discard**.
-4. **Or share from WhatsApp:** long-press a voice note → **Share** → **Brain dump** → it transcribes
-   into the review screen; Save or Discard.
+   tap **Stop & transcribe** → it transcribes and saves to Claude on its own.
+4. **Or share from WhatsApp:** long-press a voice note → **Share** → **Brain dump** → it
+   transcribes and auto-saves the same way.
 5. **Log** (🗒️ top-right) shows everything you saved, newest first, with copy / delete / clear-all.
 
 ## Limits
 
-- **Recordings up to ~10 minutes** (inline audio request-size ceiling; warns past ~10 min,
-  auto-stops at 12). For longer dumps, stop and send, then start a new one.
+- **Recordings up to 12 minutes** (warns at ~10, auto-stops at 12 — a memory bound, not a
+  transcription one). A long recording is **split behind the scenes** into safe-sized pieces,
+  transcribed in order, and joined — so a long dump transcribes instead of dead-ending (v34).
+- **A failed transcription never loses the audio** (v34): the recording is held durably on the
+  phone — Retry, **Save file**, or Discard — and survives closing the app.
 - **Needs a network connection** to transcribe or send (the app shell works offline; saved notes
   sync when you're back online).
 

@@ -83,22 +83,43 @@ export async function login(email, password) {
     }
     saveSession(sessionFromResponse(data, email));
 }
+/** v34 — a refresh can fail two very different ways, and they must not be treated the same:
+ *  TRANSIENT (network blip, gotrue 5xx): the session is probably still perfectly valid — keep it
+ *  and try again later. REJECTED (a real 4xx: revoked/expired refresh token): the session is dead
+ *  — clear it. The old code logged her out on BOTH, so a moment of flaky signal cost her the
+ *  session + a password retype + a "where are my notes" scare. */
+class TransientAuthError extends Error {
+    constructor() {
+        super('auth refresh failed transiently (network / server)');
+        this.name = 'TransientAuthError';
+    }
+}
 async function refresh(s) {
-    const res = await fetch(`${AUTH_BASE}/token?grant_type=refresh_token`, {
-        method: 'POST',
-        headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: s.refresh_token }),
-    });
+    let res;
+    try {
+        res = await fetch(`${AUTH_BASE}/token?grant_type=refresh_token`, {
+            method: 'POST',
+            headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refresh_token: s.refresh_token }),
+        });
+    }
+    catch {
+        throw new TransientAuthError(); // offline / dropped connection — NOT a rejection
+    }
+    if (res.status >= 500 || res.status === 429) {
+        throw new TransientAuthError(); // gotrue hiccup / rate limit — NOT a rejection
+    }
     const data = (await res.json().catch(() => ({})));
     if (!res.ok || !data.access_token || !data.refresh_token) {
-        throw new Error('refresh failed');
+        throw new Error('refresh rejected'); // a real 4xx — the session is genuinely dead
     }
     return sessionFromResponse(data, s.email);
 }
 /**
  * Return a valid access token, refreshing if it's within 60s of expiry. Returns null when there's
- * no session or the refresh failed (caller then shows local-only history). A failed refresh clears
- * the stored session so the UI reflects logged-out.
+ * no session or a fresh token couldn't be obtained (caller then shows the honest can't-load /
+ * logged-out state). v34: only a REJECTED refresh clears the stored session — a network blip
+ * keeps it, so a moment of bad signal can never log her out.
  */
 export async function getToken() {
     const s = loadSession();
@@ -111,8 +132,9 @@ export async function getToken() {
         saveSession(ns);
         return ns.access_token;
     }
-    catch {
-        logout();
+    catch (err) {
+        if (!(err instanceof TransientAuthError))
+            logout();
         return null;
     }
 }

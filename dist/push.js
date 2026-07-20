@@ -14,6 +14,7 @@
 //          → store). NEXT: nothing client-side — the remaining step is HER tapping the button on
 //          her Pixel + the device test (see PUSH-SETUP.md).
 import { SUPABASE_ANON_KEY } from './supabase.js';
+import { getToken } from './auth.js';
 // The app's VAPID PUBLIC key (safe to commit — it's the public half of the keypair). The matching
 // PRIVATE key is an Edge Function secret, never stored here. Regenerate both together if rotated.
 export const VAPID_PUBLIC_KEY = 'BEAmfVVYhxwC3TzQgmRWXqEnKnCs5Y57QTLIZoc2DqnLtB48Bo_kQCvUdc4PrOEgU7YdaLDr1IeCcc4Mz7q_FPk';
@@ -112,16 +113,23 @@ export async function subscribeToPush(userEmail) {
         return { ok: false, reason: 'error' };
     }
 }
-/** Store the subscription into Supabase (anon INSERT, insert-only — same posture as voice_captures).
- *  Returns true when the device is registered, false when the store failed (so the caller can report
- *  the truth instead of a permission-only optimistic "on").
+/** Store the subscription into Supabase. v34 privacy: this is an AUTHENTICATED insert — the RLS
+ *  policy no longer lets anon write here, because the app URL is public and an anon-writable
+ *  subscriptions table let any stranger register THEIR device (even claiming her email) and
+ *  receive her note titles. Login is the proof-it's-her; no token → not registered, said plainly.
+ *  Returns true when the device is registered, false when the store failed (so the caller can
+ *  report the truth instead of a permission-only optimistic "on").
  *
- *  NOTE: this is a PLAIN insert, NOT an upsert. The old `Prefer: resolution=merge-duplicates` path
- *  compiled to `ON CONFLICT DO UPDATE`, which PostgREST gates behind an anon UPDATE RLS policy the
- *  table deliberately doesn't have (anon is insert-only) — so every subscribe 401'd and no device
- *  was ever stored. `endpoint` is UNIQUE, so re-subscribing the same device returns HTTP 409; that
- *  means "already registered" → treat it as success (idempotent without needing an UPDATE policy). */
+ *  NOTE: this is a PLAIN insert, NOT an upsert. An `ON CONFLICT DO UPDATE` upsert would need an
+ *  UPDATE RLS policy the table deliberately doesn't have — so every subscribe would 401. The
+ *  `endpoint` column is UNIQUE, so re-subscribing the same device returns HTTP 409; that means
+ *  "already registered" → treat it as success (idempotent without needing an UPDATE policy). */
 async function storeSubscription(sub, userEmail) {
+    const token = await getToken();
+    if (!token) {
+        console.warn('[push] not logged in — subscription not stored');
+        return false;
+    }
     const body = {
         endpoint: sub.endpoint,
         p256dh: keyToBase64(sub, 'p256dh'),
@@ -132,7 +140,7 @@ async function storeSubscription(sub, userEmail) {
         method: 'POST',
         headers: {
             apikey: SUPABASE_ANON_KEY,
-            Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+            Authorization: `Bearer ${token}`,
             'Content-Type': 'application/json',
             Prefer: 'return=minimal',
         },
