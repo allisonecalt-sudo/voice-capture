@@ -1178,3 +1178,24 @@ body.player-min .player-controls {
   cursor: pointer;
   padding: 0;
 }
+
+/* ── Memos entry pill (index.html → memos.html) ───────────── *
+   One small fixed door to the ask/bring list. Sits just under the topbar's right edge —
+   over the compose screen's empty canvas — outside #app so render() never destroys it. */
+.memos-link {
+  position: fixed;
+  top: calc(env(safe-area-inset-top) + 62px);
+  right: var(--s3);
+  z-index: 5;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  padding: 7px var(--s3);
+}
+.memos-link:active {
+  background: var(--surface-2);
+}

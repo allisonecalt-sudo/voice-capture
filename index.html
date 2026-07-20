@@ -33,6 +33,9 @@
   </head>
   <body>
     <div id="app"></div>
+    <!-- 1-tap door to the Memos widget (ask/bring list). Lives OUTSIDE #app on purpose:
+         render() rebuilds #app's innerHTML, which would destroy an inline link. -->
+    <a href="memos.html" class="memos-link" aria-label="Open Memos">🧷 Memos</a>
     <!--
       Persistent "now playing" bar. Lives OUTSIDE #app on purpose: render() rebuilds #app's innerHTML,
       which would destroy an inline <audio> and stop playback. Keeping the player here means a voice

@@ -1,0 +1,52 @@
+<!doctype html>
+<!--
+  memos.html — Memos widget shell
+  WHAT: the one page for Allison's "memo to self" list — short things to ASK or BRING at a
+        specific moment (e.g. "ask Dr. Marar for gastro hafnaya"), typed or spoken, tagged,
+        pinned until checked off. One tap from Brain dump's home screen.
+  WHY:  before an appointment she accumulates 5-7 questions scattered across chat, phone notes
+        and the task DB — this is the one warm place they live until the moment they're needed.
+  DECIDED: lang=en + dir=ltr like every personal app; dir="auto" on the free-text inputs (she
+        sometimes types Hebrew). Data lives in the Supabase `memos` table (tandem rule — Claude
+        reads and writes it too). Checked-off memos are archived (Done fold), never deleted.
+  BUILT: empty #app mounted by dist/memos.js; same PWA head wiring as index.html.
+  NEXT:  none for v1. (sw.js precache doesn't include this page yet — the main session owns
+        sw.js right now; add memos.html/memos.css/dist/memos.js there on its next bump.)
+-->
+<html lang="en" dir="ltr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+    />
+    <meta name="theme-color" content="#1a1f1c" />
+    <title>Memos</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="memos.css" />
+
+    <!-- PWA: same wiring as index.html so the page feels native inside the installed app. -->
+    <link rel="manifest" href="manifest.webmanifest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Memos" />
+    <link rel="apple-touch-icon" href="icon-192.png" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="icon" href="icon-192.png" sizes="192x192" type="image/png" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="dist/memos.js"></script>
+    <script>
+      // Same service-worker registration as index.html — no-op if already registered.
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('sw.js', { scope: './' }).catch((err) => {
+            console.warn('[PWA] Service worker registration failed:', err);
+          });
+        });
+      }
+    </script>
+  </body>
+</html>

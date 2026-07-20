@@ -1,0 +1,254 @@
+/*
+  memos.css — Memos widget (memos.html)
+  WHAT: styles for the memo-to-self list — tag chips, tag groups, memo cards, the Done fold,
+        and the two-line composer (sticky tag + memo inputs with the morphing mic/send action).
+  WHY:  loaded AFTER styles.css and built entirely on its tokens (surfaces, text ladder, ONE
+        accent, 4px scale) so Memos reads as the same calm app, not a bolt-on.
+  DECIDED: no new colors, no shadows (borders for elevation, like the rest of the dark app);
+        checked-off rows live in a quiet collapsible fold — visible movement, zero shame.
+*/
+
+/* ── Layout ──────────────────────────────────────────────── */
+.screen-memos {
+  padding-top: var(--s2);
+}
+.memos-list {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.memos-status {
+  color: var(--text-3);
+  font-size: 14px;
+  text-align: center;
+  margin: var(--s6) 0;
+}
+.inline-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+/* ── Tag chips (filters) ─────────────────────────────────── */
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  padding: var(--s1) 0 var(--s3);
+  flex: 0 0 auto;
+}
+.chip {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px var(--s3);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.chip.is-active {
+  background: var(--surface-2);
+  border-color: var(--accent);
+  color: var(--text-1);
+}
+
+/* ── Tag groups + memo cards ─────────────────────────────── */
+.memo-group {
+  margin-bottom: var(--s4);
+}
+.memo-group-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin: 0 0 var(--s2);
+  letter-spacing: 0.02em;
+}
+.memo-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  padding: var(--s3);
+  margin-bottom: var(--s2);
+}
+.memo-check {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-3);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.memo-check:active {
+  border-color: var(--success);
+  color: var(--success);
+}
+.memo-check:disabled {
+  opacity: 0.4;
+}
+.memo-body {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  min-width: 0;
+}
+.memo-text {
+  margin: 0;
+  font-size: 15px;
+  color: var(--text-1);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.memo-src {
+  flex: 0 0 auto;
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+/* ── Done fold (archived, pullable — never deleted) ──────── */
+.done-fold {
+  margin-top: var(--s4);
+  border-top: 1px solid var(--border);
+  padding-top: var(--s3);
+}
+.done-summary {
+  cursor: pointer;
+  color: var(--text-3);
+  font-size: 13px;
+  font-weight: 600;
+  list-style: none;
+  padding: var(--s1) 0;
+}
+.done-summary::-webkit-details-marker {
+  display: none;
+}
+.done-summary::before {
+  content: '▸ ';
+}
+.done-fold[open] .done-summary::before {
+  content: '▾ ';
+}
+.done-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) 0;
+}
+.done-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.done-text {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-3);
+  text-decoration: line-through;
+  text-decoration-color: rgba(255, 255, 255, 0.25);
+  overflow-wrap: anywhere;
+}
+.done-meta {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.undo-btn {
+  flex: 0 0 auto;
+}
+
+/* ── Composer (sticky bottom, mirrors the app's bar) ─────── */
+.memo-composer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding-top: var(--s2);
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  z-index: 2;
+}
+.tag-input {
+  width: 100%;
+  padding: 8px var(--s4);
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-2);
+  font-family: var(--font);
+  font-size: 13px;
+  outline: none;
+}
+.tag-input:focus {
+  border-color: var(--accent);
+  color: var(--text-1);
+}
+.tag-input::placeholder {
+  color: var(--text-3);
+}
+.memo-input-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+/* styles.css gives .composer-action display:inline-flex, which beats the [hidden] attribute —
+   without this, BOTH the mic and the send button paint at once. */
+.memo-input-row .composer-action[hidden] {
+  display: none;
+}
+.memo-input {
+  flex: 1 1 auto;
+  min-height: 48px;
+  padding: 0 var(--s4);
+  border-radius: var(--r-field);
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-1);
+  font-family: var(--font);
+  font-size: 16px; /* 16px stops iOS zoom, same as the app's composer */
+  outline: none;
+}
+.memo-input::placeholder {
+  color: var(--text-3);
+}
+.memo-input:focus {
+  border-color: var(--accent);
+}
+
+/* ── Inline recording / transcribing strip ───────────────── */
+.memo-rec {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3);
+  border-radius: var(--r-field);
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+}
+.memo-rec .rec-timer {
+  font-size: 20px;
+}
+.memo-rec .rec-label {
+  flex: 1 1 auto;
+}
+.memo-rec .btn {
+  padding: 10px var(--s4);
+}
+.spinner-sm {
+  width: 20px;
+  height: 20px;
+  border-width: 2px;
+}
