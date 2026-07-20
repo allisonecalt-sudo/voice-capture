@@ -14,15 +14,21 @@ needs (1) the Edge Function deployed + secrets set, (2) a Database Webhook wired
 
 ## What's already done (in code / in the DB)
 
-- **`push_subscriptions` table** — created with RLS (anon INSERT-only, authenticated SELECT/DELETE)
-  and the GRANT block. (Applied via the Management API.)
-- **Client subscribe flow** — `push.ts` + a "🔔 Notify me" card in Settings. On tap (user gesture)
-  it asks permission, subscribes via the SW `PushManager` with the VAPID **public** key, and upserts
-  the subscription (idempotent on `endpoint`).
+- **`push_subscriptions` table** — created with RLS + the GRANT block. **v34 (2026-07-20): INSERT
+  is authenticated-only, WITH CHECK binding `user_email` to the login's JWT email** (anon INSERT
+  dropped — the app URL is public and anon-writable subscriptions let a stranger register a device,
+  even claiming her email). Authenticated SELECT/DELETE unchanged. Project-wide **open signup is
+  DISABLED** (single-user project), so "authenticated" genuinely means her.
+- **Client subscribe flow** — `push.ts` + a "🔔 Notify me" card in Settings (**shown only when
+  logged in**). On tap (user gesture) it asks permission, subscribes via the SW `PushManager` with
+  the VAPID **public** key, and stores the subscription with her auth token — a PLAIN insert, not
+  an upsert (`endpoint` is UNIQUE; a 409 means already-registered = success).
 - **Service worker** — `push` + `notificationclick` handlers in `sw.js` (gentle copy, no badge
   counter, coalesced by `tag`). Tap → focuses/opens the app.
 - **Edge Function** — `supabase/functions/send-push/index.ts` (Deno, `jsr:@negrel/webpush`), guarded
-  to `from_claude === true`, prunes dead subscriptions, never 500s the webhook.
+  to `from_claude === true`, **sends only to an email allowlist (v6: `PUSH_ALLOWED_EMAILS` secret,
+  default = her two gmails — rows with null/other emails are never pushed to)**, prunes dead
+  subscriptions, never 500s the webhook.
 - **VAPID keypair** — generated. The **public** key is in `push.ts` + the Edge Function secrets. The
   **private** key lives ONLY in the gitignored `supabase/.env.push-secrets` (never committed — this
   repo is public).
@@ -77,8 +83,10 @@ suspenders, but the function already guards it.
 
 ## Step 4 — HER one step: turn it on + test (on the Pixel)
 
-1. Open the app on her Pixel (installed PWA), go to **Settings → Notes from Claude → 🔔 Notify me**,
-   and accept the browser permission prompt. The button flips to "✓ Notifications on".
+1. Open the app on her Pixel (installed PWA), **make sure she's logged in** (v34: the 🔔 card only
+   renders logged-in, and the store is refused without her token), then **Settings → Notes from
+   Claude → 🔔 Notify me** and accept the browser permission prompt. The button flips to
+   "✓ Notifications on · tap to refresh".
 2. Test: have Claude push a note (`scripts/push-claude-note.py` writes a `from_claude=true` row) →
    the webhook fires `send-push` → a gentle notification arrives. Tapping it opens her Log.
 

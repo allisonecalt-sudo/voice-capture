@@ -1,15 +1,17 @@
-// push.ts — Web Push subscribe flow (v15, STAGED)
+// push.ts — Web Push subscribe flow (v15, STAGED; v34: login-gated)
 // WHAT: the client half of "🔔 Notify me" — on a user gesture, ask for notification permission,
-//       subscribe via the service worker's PushManager with the app's VAPID PUBLIC key, and upsert
-//       the resulting subscription into the `push_subscriptions` Supabase table (anon INSERT, same
-//       posture as voice_captures). The SEND half is the Supabase Edge Function `send-push`, fired
-//       by a Database Webhook on a from_claude row INSERT — see PUSH-SETUP.md.
+//       subscribe via the service worker's PushManager with the app's VAPID PUBLIC key, and store
+//       the subscription in the `push_subscriptions` Supabase table with HER auth token (v34:
+//       the INSERT policy is authenticated-only + JWT-email-bound; anon can no longer register a
+//       device). The SEND half is the Supabase Edge Function `send-push`, fired by a Database
+//       Webhook on a from_claude row INSERT — see PUSH-SETUP.md.
 // WHY:  GitHub Pages is static and can't push; only the Edge Function can. This module just makes a
 //       device subscribable. It is fully OPTIONAL and inert until she taps the button — it never
 //       touches the capture flow, so it can't break the core build.
 // DECIDED: VAPID public key is safe to ship in client code (it's the PUBLIC half). The private key
-//          lives ONLY as an Edge Function secret (never in the repo). Subscription rows are
-//          insert-only for anon (a device can register itself but can't read the table back).
+//          lives ONLY as an Edge Function secret (never in the repo). v34 (2026-07-20): device
+//          registration requires HER login (RLS: authenticated INSERT, user_email must equal the
+//          JWT email) — the old anon-registration posture let a public-URL stranger subscribe.
 // BUILT:  isPushSupported(), pushPermission(), subscribeToPush() (gesture → permission → subscribe
 //          → store). NEXT: nothing client-side — the remaining step is HER tapping the button on
 //          her Pixel + the device test (see PUSH-SETUP.md).

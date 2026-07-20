@@ -29,14 +29,15 @@ frictionless and never lost; Claude reads the inbox and routes each item to its 
   budget-2026 north star. English chrome; content fields use `dir="auto"` for Hebrew/English mixing.
 - **Web Share Target:** a WhatsApp voice note shared into the app (long-press → Share → Brain dump)
   POSTs to `./share-target`; the service worker catches it, parks the file in a cache, and redirects
-  to `?shared=1`, which transcribes it through the same record→review path.
+  to `?shared=1`, which transcribes it through the same record→auto-save path.
 
 **BUILT:**
 
 - `index.html` / `styles.css` — calm dark shell, token-based theme, big thumb-reach compose bar.
-- `app.ts` — state machine (`compose → recording → transcribing → review`, plus `log` / `settings`),
-  Web Audio capture, morphing compose action + auto-grow, voice Save/Discard, Log (copy/delete/
-  clear-all), Settings, share-target ingest, local-first history + deferred Supabase sync.
+- `app.ts` — state machine (`compose → recording → transcribing`, plus `log` / `settings`),
+  Web Audio capture, morphing compose action + auto-grow, voice auto-save, Log (copy / per-tab
+  Archive-all with Undo), Settings, share-target ingest, local-first history + deferred Supabase
+  sync. `pending-audio.ts` — IndexedDB hold for a failed recording (survives app close; v34).
 - `wav.ts` — PCM → 16 kHz mono WAV encoder + base64 helper.
 - `gemini.ts` — the `generateContent` transcription request + parser (model `gemini-2.5-flash`).
 - `history.ts` — localStorage log + Supabase sync retry. `supabase.ts` — insert-only `saveCapture`.
@@ -60,7 +61,8 @@ frictionless and never lost; Claude reads the inbox and routes each item to its 
    tap **Stop & transcribe** → it transcribes and saves to Claude on its own.
 4. **Or share from WhatsApp:** long-press a voice note → **Share** → **Brain dump** → it
    transcribes and auto-saves the same way.
-5. **Log** (🗒️ top-right) shows everything you saved, newest first, with copy / delete / clear-all.
+5. **Log** (🗒️ top-right) shows everything you saved, newest first, with copy / 🗑 / a per-tab
+   **Archive all** (everything archives with a 6-second Undo — never deleted, always pullable).
 
 ## Limits
 

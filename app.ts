@@ -19,7 +19,7 @@
 //          voice note shared in) is kept and funnels into the same record→auto-save path.
 // BUILT:  state machine + render(), AudioRecorder (getUserMedia → 16 kHz mono WAV), Gemini call,
 //          compose bar w/ morphing action + auto-grow, voice auto-save on transcription, Log
-//          (copy/delete/clear-all), Settings, share-target ingest, local-first history + sync.
+//          (copy/🗑/per-tab Archive-all + Undo), Settings, share-target ingest, local-first history + sync.
 // NEXT:   hardware back-button integration + delete-undo are deliberate future polish.
 
 import { transcribeAudio } from './gemini.js';
@@ -608,7 +608,7 @@ async function restorePendingAudio(): Promise<void> {
 /**
  * Pick up a voice note shared into the app (Android: long-press a WhatsApp voice note → Share →
  * this app). The service worker stashed it in SHARE_CACHE and redirected with ?shared=1; we read
- * it back and run the same record→review path. One-shot: consumed on pickup, flag stripped.
+ * it back and run the same record→auto-save path. One-shot: consumed on pickup, flag stripped.
  */
 async function ingestSharedAudio(): Promise<void> {
   const params = new URLSearchParams(location.search);
