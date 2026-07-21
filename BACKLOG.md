@@ -8,6 +8,7 @@ asked for yet. Her rule: ship lean; defer loudly.
 12-min ceiling) · README/doc drift fixed. Fix depth was "D — everything" (bugs only, not extras).
 
 ## Parked upgrades (recommended by the sweep, small, awaiting her word)
+
 - **Persist the half-typed compose draft** — a glance away currently blanks a half-typed thought.
 - **Recording-Cancel gets an Undo (or moves away from Stop)** — the one destructive action
   without the Undo net; a one-handed mis-tap kills a long dump.
@@ -19,12 +20,14 @@ asked for yet. Her rule: ship lean; defer loudly.
   verify the server row on Settings open.
 
 ## Open tensions (HER calls, not made — do not resolve without her)
+
 - **Keep capture audio so Claude can re-hear a garbled name?** Today audio is deleted after
   transcription; "flag garbled, don't guess" can't re-listen. For: closes the loop, tandem-readable.
   Against: storage growth, raw audio at rest is more sensitive than text, cuts against ship-lean.
 - **Split the 103KB app.ts?** Lean: don't big-bang it — peel a module only when already in that code.
 
 ## Accepted residuals (known, documented, not bugs to re-report)
+
 - **Consumed-then-deleted reply can be re-inserted by a retry** whose original response was lost
   (no client-side tombstone can distinguish it from never-landed). Rare double-fault; worst case a
   session re-reads a reply; no note loss. Documented in supabase.ts saveCapture.

@@ -570,7 +570,8 @@ function downloadPendingVoice(): void {
   const pending = state.pendingVoice;
   if (!pending) return;
   const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', '');
-  const ext = pending.mimeType === 'audio/wav' ? 'wav' : (pending.mimeType.split('/')[1] ?? 'audio');
+  const ext =
+    pending.mimeType === 'audio/wav' ? 'wav' : (pending.mimeType.split('/')[1] ?? 'audio');
   const url = URL.createObjectURL(pending.blob);
   const a = document.createElement('a');
   a.href = url;
