@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "build": "tsc",
-    "lint": "eslint app.ts wav.ts gemini.ts supabase.ts history.ts auth.ts push.ts pending-audio.ts --ext .ts",
+    "lint": "eslint app.ts wav.ts gemini.ts supabase.ts history.ts auth.ts push.ts pending-audio.ts memos.ts --ext .ts",
     "format": "prettier --write \"**/*.{ts,html,css,json,md}\" --ignore-path .prettierignore",
     "format:check": "prettier --check \"**/*.{ts,html,css,json,md}\" --ignore-path .prettierignore",
     "test": "playwright test",
