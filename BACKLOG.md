@@ -44,10 +44,14 @@ asked for yet. Her rule: ship lean; defer loudly.
   without the Undo net; a one-handed mis-tap kills a long dump.
 - **"✓ Claude saw it" receipt on her own captures** — replies already show read receipts; a plain
   brain-dump just says Saved. Only ever show "seen" when genuinely true.
-- **Version-tag CI check** — one assert so APP_VERSION / BUILD_DATE / sw VERSION can't drift
-  (three hand-synced constants across 34+ deploys).
 - **"✓ Notifications on" self-check** — v34 made the button re-tappable; a real self-heal would
   verify the server row on Settings open.
+
+## Shipped from this list
+
+- **Version-tag CI check** — DONE 2026-08-26, `tests/version-sync.spec.ts`: sw VERSION must match
+  APP_VERSION (patch suffix allowed), build stamps must carry a time, and every compiled module
+  must be precached. Verified to actually fail on a real drift, not just pass.
 
 ## Open tensions (HER calls, not made — do not resolve without her)
 

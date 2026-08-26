@@ -1,7 +1,7 @@
 /*
   styles.css — Brain Dump (voice-capture)
   WHAT: the whole look — a calm, dark, one-action capture app. Compose-first home with a single
-        morphing action bar, an inline recording state, a voice review screen, and a minimal log.
+        morphing action bar, an inline recording state, a To-Do list, and a minimal log.
   WHY:  this is Allison's "door to Claude" for current thoughts. Her design north star is
         workout-tracker + budget-2026: "clean, organized, not too insane" — few surfaces, one
         accent, breathing room. Dark + minimal so the empty canvas invites a thought.
@@ -338,43 +338,6 @@ body {
   font-size: 16px;
   color: var(--text-1);
   margin: 0;
-}
-
-/* ── Review (voice opt-in save) ──────────────────────────── */
-.screen-review {
-  padding-top: var(--s4);
-}
-.field-label {
-  font-size: 13px;
-  color: var(--text-2);
-  margin-bottom: var(--s2);
-}
-.review-text {
-  width: 100%;
-  flex: 1 1 auto;
-  min-height: 160px;
-  resize: none;
-  padding: var(--s4);
-  border-radius: var(--r-card);
-  border: 1px solid var(--border);
-  background: var(--surface-1);
-  color: var(--text-1);
-  font-family: var(--font);
-  font-size: 16px;
-  line-height: var(--lh);
-  outline: none;
-}
-.review-text:focus {
-  border-color: var(--accent);
-}
-.review-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  padding-top: var(--s4);
-}
-.review-actions .btn-ghost {
-  margin-right: auto;
 }
 
 /* ── Log ─────────────────────────────────────────────────── */
@@ -1170,17 +1133,6 @@ body.player-min .player-controls {
   font-weight: 600;
   color: var(--text-2);
   letter-spacing: 0.01em;
-}
-.claude-player {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  margin: var(--s1) 0 var(--s2);
-}
-.claude-audio {
-  flex: 1 1 auto;
-  width: 100%;
-  height: 36px;
 }
 /* Playback-speed cycle button (1× / 1.25× / 1.5× / 0.75×). Quiet chip, tabular so it doesn't jump
    width as the label changes. Not the accent — it's a control, not the primary signal. */

@@ -1,20 +1,24 @@
 // history.ts — local transcript history + Supabase sync retry + to-do/thought tagging
 // WHAT: the localStorage-backed list of saved transcripts (newest first, capped), plus the
 //       sync logic that pushes unsynced items to the voice_captures inbox and flips them to
-//       synced. Each item also carries a routing tag (`category`: 'todo' | 'thought' | none).
+//       synced. Each item can carry a routing tag (`category`), but nothing in the app sets one
+//       any more — see the note below.
 //       The one rule: a transcript is ALWAYS written locally first, then synced — so an offline
 //       phone never loses a note (or a tag).
 // WHY:  anon RLS is INSERT-ONLY (can't read Supabase back, can't update it either), so the
 //       in-app History view must come from localStorage. This module owns that store so app.ts
 //       stays about UI/state and the Playwright tests can seed/inspect the store directly. The
-//       category is how Claude routes the note (to-do → task list, thought → thinking notes).
+//       STALE-BY-DESIGN (cleaned up 2026-08-26): `category` was chosen on a result screen that
+//       was DELETED on 2026-06-23 when voice started auto-saving. The field is kept on the type
+//       and still rides the INSERT, because Claude's own pushed notes use it — but the app writes
+//       none, and v35's To-Do destination is how a to-do actually gets routed now.
 // DECIDED: key = 'vc.history'; cap 200 (oldest dropped); each item carries `synced` so a failed
 //          save just stays false and retries next load / next sync. id via crypto.randomUUID
 //          with a timestamp fallback. createdAt = new Date().toISOString(). NO supabaseId is
 //          kept — anon can't update a row after insert, so there's nothing to address later; the
 //          tag rides along IN the INSERT body. The send is deferred (by app.ts) until she leaves
 //          the result screen, so the final tag is the one that lands.
-// BUILT:  HistoryItem type, load/save store, addCapture, deleteCapture, setCategory, syncPending.
+// BUILT:  HistoryItem type, load/save store, addCapture, deleteCapture, syncPending.
 //         NO mass-wipe primitive on purpose (v34): logged in, pruneSyncedLocal has already dropped
 //         every synced copy, so this buffer holds ONLY notes that reached nowhere else — wiping it
 //         destroyed exactly what had no backup. "Clear" is now an Undo-able server-side ARCHIVE
@@ -119,28 +123,6 @@ export function addCapture(
 export function deleteCapture(id: string): void {
   const items = loadHistory().filter((i) => i.id !== id);
   saveHistory(items);
-}
-
-/**
- * Set (or clear, with null) the routing tag on a local history item and return the updated
- * item (or null if no such item). LOCAL ONLY — writes localStorage and never touches the
- * network. There is no server-side update path (anon can't UPDATE): the tag reaches Supabase
- * only when this item is first sent, riding along in the INSERT body. So tagging a not-yet-sent
- * item before it syncs is fully captured; re-tagging an already-sent item updates only the phone
- * copy (known, accepted v0 limitation — the normal flow tags on the result screen before the
- * send, so the tag always lands).
- */
-export function setCategory(id: string, category: Category | null): HistoryItem | null {
-  const items = loadHistory();
-  const item = items.find((i) => i.id === id);
-  if (!item) return null;
-  if (category === 'todo' || category === 'thought') {
-    item.category = category;
-  } else {
-    delete item.category;
-  }
-  saveHistory(items);
-  return item;
 }
 
 /**

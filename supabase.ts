@@ -2,8 +2,8 @@
 // WHAT: REST (fetch) helper for the `voice_captures` table — no supabase-js, no deps, like
 //       the rest of the app. saveCapture() POSTs one transcript row (insert-only). This is the
 //       "send to Claude" half: each saved transcript is a message Claude reads and routes, and
-//       the category — set IN the insert — tells Claude HOW to route it (to-do → task list,
-//       thought → thinking notes).
+//       the category — set IN the insert — tells Claude HOW to route it. NOTE (2026-08-26): the
+//       app itself no longer sets one; see the Category comment below.
 // WHY:  copy-paste loses things; saving puts every note in one inbox that survives the session.
 //       Dependency-free fetch keeps the app a single static bundle.
 // DECIDED: anon key is the PUBLIC client key (safe to commit, exactly like the budget app).
@@ -13,11 +13,12 @@
 //            1) We CANNOT ask for the row back: `Prefer: return=representation` requires SELECT,
 //               which anon lacks, so PostgREST 401s the insert. We use `return=minimal` and read
 //               nothing back — saveCapture returns void.
-//            2) The to-do/thought tag MUST be part of the single INSERT — there is no PATCH path
-//               (a later UPDATE would need a SELECT policy to locate the row; anon has none). So
-//               the tag is chosen on the result screen and the send is deferred until she leaves
-//               it, guaranteeing the final tag rides along in the insert. (See history.ts /
-//               app.ts.) Throw on any non-2xx so the caller can fall back to "saved — will sync".
+//            2) Any tag MUST be part of the single INSERT — there is no PATCH path (a later
+//               UPDATE would need a SELECT policy to locate the row; anon has none). That is why
+//               the result screen used to defer the send until she tagged. That screen is gone
+//               (2026-06-23) and v35's To-Do destination replaced the whole idea: the destination
+//               is picked BEFORE she speaks, so nothing has to be tagged afterwards.
+//               Throw on any non-2xx so the caller can fall back to "saved — will sync".
 // BUILT:  SUPABASE_URL, SUPABASE_ANON_KEY constants + saveCapture() (insert-only).
 // NEXT:   none — stable. If reads/updates are ever needed, that's an authed surface, not this key.
 
@@ -29,9 +30,10 @@ export const SUPABASE_URL = 'https://hpiyvnfhoqnnnotrmwaz.supabase.co/rest/v1/vo
 export const SUPABASE_ANON_KEY =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhwaXl2bmZob3Fubm5vdHJtd2F6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI0NzIwNDEsImV4cCI6MjA4ODA0ODA0MX0.AsGhYitkSnyVMwpJII05UseS_gICaXiCy7d8iHsr6Qw';
 
-// The routing tag Claude reads: 'todo' → her task list, 'thought' → her thinking notes,
-// null/absent → unsorted (Claude decides). Mirrored onto each localStorage HistoryItem and set
-// at insert time (anon can't change it afterward).
+// The routing tag Claude reads. DORMANT IN THE APP as of 2026-08-26: the UI that set it was
+// removed with the result screen (2026-06-23), and a to-do is now routed by v35's To-Do
+// destination instead. Kept because the column is real and Claude's own pushed notes use it
+// ('claude-note'), so the plumbing must keep carrying whatever it is given.
 export type Category = 'todo' | 'thought';
 
 // How the capture entered the app: a spoken+transcribed note ('voice') or one she typed

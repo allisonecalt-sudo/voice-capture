@@ -3,12 +3,19 @@
 **WHAT:** A one-screen phone app that is Allison's **door to Claude** — a place to fire off a
 current thought. Open it and you're on a compose screen with one bar: **type** a thought and tap
 **send**, or tap the **mic** to speak it. Typed thoughts go straight to her Claude inbox; voice
-notes transcribe and **auto-save** the same way. A minimal **Log** lists what she
-saved; **Settings** holds the (voice-only) Gemini key.
+notes transcribe and **auto-save** the same way. A switch at the top picks **where it lands** —
+🧠 Brain dump (the Claude inbox) or ✅ **To-Do list**, which shows the list right there. A minimal
+**Log** lists what she saved; **Settings** holds the (voice-only) Gemini key.
 
 **WHY:** This is modelled on how she fires notes into WhatsApp-to-self and brings them to Claude.
-It's a brain-dump channel for **current thoughts** — _not_ a to-do tracker. Capture must be
-frictionless and never lost; Claude reads the inbox and routes each item to its real home.
+It's a brain-dump channel for **current thoughts**. Capture must be frictionless and never lost;
+Claude reads the inbox and routes each item to its real home.
+
+> This used to read "_not_ a to-do tracker", and that held until 2026-08-26, when she asked for
+> one: _"I want it super easy — select To Do List and then do like my usual talking or writing and
+> then just is there."_ v35 added the To-Do destination. The original principle survives in the
+> shape of the fix: the to-do list is the SAME one screen and the SAME two ways of talking, with a
+> switch in front — not a second app bolted on.
 
 **DECIDED (do not re-litigate):**
 
@@ -30,6 +37,16 @@ frictionless and never lost; Claude reads the inbox and routes each item to its 
 - **Web Share Target:** a WhatsApp voice note shared into the app (long-press → Share → Brain dump)
   POSTs to `./share-target`; the service worker catches it, parks the file in a cache, and redirects
   to `?shared=1`, which transcribes it through the same record→auto-save path.
+  **The POST is the fragile part** (2026-08-26): GitHub Pages is static and answers every POST with
+  a bare `405 Not Allowed`, so the service worker is the ONLY thing standing between her and that
+  error page. When Android evicted the worker, share-in died silently. Three answers shipped, and
+  the spec forbids the obvious fourth — see `MIGRATION-cloudflare.md`.
+- **To-Do destination (v35).** The destination is picked BEFORE she speaks, not tagged afterwards.
+  To-dos live in the existing `memos` table under tag `todo` — **no new table**; a to-do is a memo
+  with a reserved tag, and the Memos page is untouched. A **reply** and a **shared WhatsApp clip**
+  always ignore the switch and go to the inbox where they belong. Promotion into the canonical
+  `todo_tasks` DB stays MANUAL: that table wants a next-step, an energy level and a calendar
+  pairing, which is more than a 5-second voice note can honestly fill, so Claude promotes them.
 
 **BUILT:**
 
@@ -41,12 +58,21 @@ frictionless and never lost; Claude reads the inbox and routes each item to its 
 - `wav.ts` — PCM → 16 kHz mono WAV encoder + base64 helper.
 - `gemini.ts` — the `generateContent` transcription request + parser (model `gemini-2.5-flash`).
 - `history.ts` — localStorage log + Supabase sync retry. `supabase.ts` — insert-only `saveCapture`.
+- `todos.ts` — the To-Do list library (read / add / check-off against `memos`, tag `todo`).
+- `functions/share-target.js` + `_routes.json` — a server-side receiver for the share POST, so
+  share-in survives a dead service worker. **Inert on GitHub Pages**; see `MIGRATION-cloudflare.md`.
 - `sw.js` + `manifest.webmanifest` + icons — installable PWA (shell cached; Gemini always live;
   Web Share Target).
 - `tests/app.spec.ts` — Playwright, fully mocked (no real mic / key / API; never writes prod).
+  `tests/memos.spec.ts` + `tests/todos.spec.ts` drive the REAL Supabase round trip, but only ever
+  against the `memos_test` twin (`?db=test`) — prod `memos` is never touched.
+  `tests/share-target.spec.ts` runs the Pages Function in Node. `tests/version-sync.spec.ts` is the
+  drift guard: sw.js's cache VERSION must match app.ts's APP_VERSION, build stamps must carry a
+  time, and every compiled module must be precached (a missing one boots the app blank offline).
 - `.github/workflows/ci.yml` — lint → build → test.
 
 **NEXT:** hardware back-button integration and a delete-undo toast are deliberate future polish.
+Parked upgrades and open tensions live in `BACKLOG.md`.
 
 ---
 
@@ -61,7 +87,10 @@ frictionless and never lost; Claude reads the inbox and routes each item to its 
    tap **Stop & transcribe** → it transcribes and saves to Claude on its own.
 4. **Or share from WhatsApp:** long-press a voice note → **Share** → **Brain dump** → it
    transcribes and auto-saves the same way.
-5. **Log** (🗒️ top-right) shows everything you saved, newest first, with copy / 🗑 / a per-tab
+5. **To-Do list:** tap **✅ To-Do list** at the top. Now type or speak exactly the same way and it
+   lands on the list below, where you can check it off. The choice sticks between sessions — tap
+   **🧠 Brain dump** to go back.
+6. **Log** (🗒️ top-right) shows everything you saved, newest first, with copy / 🗑 / a per-tab
    **Archive all** (everything archives with a 6-second Undo — never deleted, always pullable).
 
 ## Limits
@@ -73,6 +102,8 @@ frictionless and never lost; Claude reads the inbox and routes each item to its 
   phone — Retry, **Save file**, or Discard — and survives closing the app.
 - **Needs a network connection** to transcribe or send (the app shell works offline; saved notes
   sync when you're back online).
+- **Reading the To-Do list needs the app login** (RLS gives the anon key no read). Logged out, the
+  panel says so plainly instead of showing an empty list — **adding still works** either way.
 
 ## Dev
 
