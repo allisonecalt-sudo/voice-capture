@@ -9,6 +9,15 @@ asked for yet. Her rule: ship lean; defer loudly.
 
 ## Parked upgrades (recommended by the sweep, small, awaiting her word)
 
+- **Share target that survives a dead service worker** (added 2026-08-26, ~1hr, NOT small) — the
+  share-in path POSTs to `./share-target`, and GitHub Pages answers any POST with a bare
+  "405 Not Allowed". Today only the SW stands between her and that page. v34.3 requested
+  persistent storage so Android stops evicting the worker, but that is hardening, not a fix — a
+  manual "clear site data" still wipes it. Real fix: move the share target to a Supabase edge
+  function that can actually receive the POST, park the file, and redirect into the app. Her call,
+  offered and deferred 2026-08-26.
+  **The failure mode is the reason this matters:** it is SILENT. Aug 21 → Aug 26 = five days of
+  shared captures lost with no signal; she found it only by hitting the 405 herself.
 - **Persist the half-typed compose draft** — a glance away currently blanks a half-typed thought.
 - **Recording-Cancel gets an Undo (or moves away from Stop)** — the one destructive action
   without the Undo net; a one-handed mis-tap kills a long dump.
