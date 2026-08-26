@@ -78,6 +78,29 @@
     </div>
     <script type="module" src="dist/app.js"></script>
     <script>
+      // Persistent storage — ask the browser NOT to evict this origin (v34.3, 2026-08-26).
+      // WHY: the Web Share Target depends on a LIVE service worker. GitHub Pages is static and
+      //      answers any POST with a bare "405 Not Allowed", so if Android evicts the worker
+      //      under storage pressure, sharing a WhatsApp voice note in dies at a 405 page — and
+      //      it dies SILENTLY (Aug 21 -> Aug 26 2026: five days of shared notes lost before the
+      //      405 was noticed). Persistent storage exempts the SW registration + Cache Storage
+      //      from automatic eviction. Chrome grants it without a prompt for an installed PWA.
+      // NOTE: this is hardening, not a guarantee — a manual "clear site data" still wipes it.
+      //      The real fix (a share target that works with the worker dead) is BACKLOG'd.
+      if (navigator.storage && typeof navigator.storage.persist === 'function') {
+        navigator.storage
+          .persisted()
+          .then((already) => (already ? true : navigator.storage.persist()))
+          .then((granted) => {
+            if (!granted) {
+              console.warn('[PWA] Persistent storage denied — the service worker can be evicted.');
+            }
+          })
+          .catch((err) => {
+            console.warn('[PWA] Persistent storage request failed:', err);
+          });
+      }
+
       // PWA service worker registration — registers on load, no-op if unsupported.
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {

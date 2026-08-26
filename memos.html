@@ -39,6 +39,23 @@
     <div id="app"></div>
     <script type="module" src="dist/memos.js"></script>
     <script>
+      // Persistent storage — same anti-eviction request as index.html (v34.3). Repeated here
+      // because Memos is a home-screen shortcut she can open WITHOUT ever loading index.html;
+      // the request is per-origin and idempotent, so whichever page she opens first arms it.
+      if (navigator.storage && typeof navigator.storage.persist === 'function') {
+        navigator.storage
+          .persisted()
+          .then((already) => (already ? true : navigator.storage.persist()))
+          .then((granted) => {
+            if (!granted) {
+              console.warn('[PWA] Persistent storage denied — the service worker can be evicted.');
+            }
+          })
+          .catch((err) => {
+            console.warn('[PWA] Persistent storage request failed:', err);
+          });
+      }
+
       // Same service-worker registration as index.html — no-op if already registered.
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
