@@ -50,6 +50,7 @@ import {
 } from './supabase.js';
 import { currentEmail, getToken, isLoggedIn, login, logout } from './auth.js';
 import { isPushSupported, pushPermission, subscribeToPush } from './push.js';
+import { Todo, addTodo, loadTodos, setTodoDone } from './todos.js';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -73,10 +74,10 @@ const SHARE_ITEM_KEY = 'shared-audio';
 
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v34';
+const APP_VERSION = 'v35';
 // Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
 // rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
-const BUILD_DATE = 'Jul 20, 2026 · 3:58pm JDT';
+const BUILD_DATE = 'Aug 26, 2026 · 2:05pm JDT';
 
 // Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
 // default is unchanged; remembered across sessions in localStorage so her choice sticks.
@@ -100,6 +101,9 @@ type Screen = 'compose' | 'recording' | 'transcribing' | 'log' | 'settings';
 // The three content segments of the Log (her proven top-segmented-control pattern). Views of ONE
 // inbox, never a tab bar: 🎤 her own captures · 🎧 Claude voice notes · 📝 Claude written memos.
 type Segment = 'mine' | 'voice' | 'info' | 'shared';
+
+// v35 — where a capture lands. Chosen up front on the compose screen, sticky between sessions.
+type Destination = 'inbox' | 'todo';
 
 interface AppState {
   screen: Screen;
@@ -155,6 +159,16 @@ interface AppState {
   // v22 — the session she's filtered the Voice/Info tab to (a session_label), or null for "All".
   // null = show every session, grouped by session divider; a value = show only that session's notes.
   sessionFilter: string | null;
+  // v35 — WHERE the next capture goes, chosen BEFORE she speaks or types (her ask 2026-08-26:
+  // "select To Do List and then do like my usual talking or writing and then just is there").
+  // 'inbox' = the Claude inbox, exactly as always. 'todo' = straight onto the To-Do list, no
+  // tagging step afterwards. Sticky across sessions — picking it once is the whole point.
+  destination: Destination;
+  todos: Todo[];
+  // Reading to-dos needs her login (RLS gives anon no SELECT), so 'logged-out' is a REAL state
+  // and not an empty list — an empty list would be a silent lie about her own to-dos.
+  todosLoad: 'idle' | 'loading' | 'ready' | 'error' | 'logged-out';
+  todoBusyIds: string[]; // to-dos with an in-flight check-off (guards a double-tap)
 }
 
 const state: AppState = {
@@ -176,7 +190,91 @@ const state: AppState = {
   pendingOpenNote: null,
   playingId: null,
   sessionFilter: null,
+  destination: 'inbox', // overwritten by restoreDestination() on boot if she picked To-Do before
+  todos: [],
+  todosLoad: 'idle',
+  todoBusyIds: [],
 };
+
+// ── Destination (v35) ────────────────────────────────────────────────────────
+// Sticky so the choice survives closing the app: if she is in a to-do stretch, every capture
+// keeps landing on the list until she switches back. Anything unrecognised falls back to 'inbox'
+// — the destination must never strand a capture somewhere unexpected.
+
+const DESTINATION_KEY = 'vc.destination';
+
+function restoreDestination(): void {
+  try {
+    if (localStorage.getItem(DESTINATION_KEY) === 'todo') state.destination = 'todo';
+  } catch {
+    /* storage unavailable — 'inbox' is the safe default */
+  }
+}
+
+function setDestination(next: Destination): void {
+  state.destination = next;
+  try {
+    localStorage.setItem(DESTINATION_KEY, next);
+  } catch {
+    /* storage unavailable — the choice still holds for this session */
+  }
+  render();
+  if (next === 'todo') void refreshTodos();
+}
+
+/** Pull the list. Logged-out and failed are DISTINCT visible states — never an empty list, which
+ *  would read as "you have no to-dos" when the truth is "I couldn't look". */
+async function refreshTodos(): Promise<void> {
+  if (state.todosLoad !== 'ready') {
+    state.todosLoad = 'loading';
+    if (state.screen === 'compose') render();
+  }
+  try {
+    state.todos = await loadTodos();
+    state.todosLoad = 'ready';
+  } catch (err) {
+    state.todosLoad = err instanceof Error && err.message === 'logged-out' ? 'logged-out' : 'error';
+    console.warn('[brain-dump] to-do load failed:', err);
+  }
+  if (state.screen === 'compose') render();
+}
+
+/** Check off / restore one to-do. Optimistic: the row flips instantly (a check-off that waits on
+ *  the network feels broken), and rolls back visibly if the write fails — never a false ✓. */
+async function toggleTodo(id: string, done: boolean): Promise<void> {
+  if (state.todoBusyIds.includes(id)) return;
+  const before = state.todos;
+  state.todoBusyIds = [...state.todoBusyIds, id];
+  state.todos = state.todos.map((t) =>
+    t.id === id
+      ? { ...t, status: done ? 'done' : 'active', done_at: done ? new Date().toISOString() : null }
+      : t
+  );
+  render();
+  try {
+    await setTodoDone(id, done);
+  } catch (err) {
+    state.todos = before; // put it back — the list must never claim a save that didn't happen
+    showToast(done ? 'Couldn’t check it off — try again' : 'Couldn’t undo — try again');
+    console.warn('[brain-dump] to-do update failed:', err);
+  } finally {
+    state.todoBusyIds = state.todoBusyIds.filter((x) => x !== id);
+    render();
+  }
+}
+
+/** Save a capture to the To-Do list instead of the inbox. Shared by the typed and voice paths so
+ *  both behave identically — the only difference is what `source` says. */
+async function saveToTodos(text: string, source: 'typed' | 'voice'): Promise<boolean> {
+  try {
+    await addTodo(text, source);
+  } catch (err) {
+    console.warn('[brain-dump] to-do save failed:', err);
+    return false;
+  }
+  void refreshTodos();
+  return true;
+}
 
 // ── Key storage (localStorage only, device-only) ─────────────────────────────
 
@@ -508,6 +606,36 @@ async function transcribeBlob(
       showToast('Nothing to save');
       return;
     }
+    // v35 — To-Do mode: a recording SHE just made goes on the list. A shared WhatsApp clip never
+    // does (source stays 'whatsapp'): that arrived from outside and belongs in the inbox where
+    // she can read it, whatever the switch happens to be set to.
+    if (isTodoMode() && source === 'voice') {
+      if (await saveToTodos(text, 'voice')) {
+        if (state.pendingVoice && state.pendingVoice.blob === blob) {
+          state.pendingVoice = null;
+          void clearPendingAudio();
+        }
+        state.screen = 'compose';
+        render();
+        showToast('Added to your list ✓');
+        buzz();
+        return;
+      }
+      // Save failed — fall through to the inbox path so the transcript is NEVER dropped. It
+      // lands as a normal capture and the toast says where it actually went. No reply context:
+      // To-Do mode is off whenever a reply is in flight (isTodoMode), so there is none to carry.
+      addCapture(text, durationSeconds, source, undefined);
+      if (state.pendingVoice && state.pendingVoice.blob === blob) {
+        state.pendingVoice = null;
+        void clearPendingAudio();
+      }
+      state.screen = 'compose';
+      render();
+      showToast('List didn’t take it — saved to your inbox instead');
+      void syncPending();
+      return;
+    }
+
     addCapture(text, durationSeconds, source, consumeReplyContext()); // local-first, never lose it
     // Clear the held-recording slot ONLY if it holds THIS audio. A different recording's success
     // must never wipe a held failed one (review-caught: record A fails + is held → record B
@@ -689,6 +817,32 @@ function consumeReplyContext():
 function sendComposed(): void {
   const text = state.draft.trim();
   if (!text) return;
+
+  // v35 — To-Do mode: the text goes on the list instead of the inbox. Cleared optimistically for
+  // the same reason the inbox path clears immediately (the keyboard stays up for rapid capture);
+  // a failed save says so out loud and hands the words back rather than swallowing them.
+  if (isTodoMode()) {
+    state.draft = '';
+    const ta = document.getElementById('draft') as HTMLTextAreaElement | null;
+    if (ta) {
+      ta.value = '';
+      autoGrow(ta);
+      ta.focus();
+    }
+    syncComposeAction();
+    void saveToTodos(text, 'typed').then((ok) => {
+      if (ok) {
+        showToast('Added to your list ✓');
+        buzz();
+      } else {
+        state.draft = text; // never lose her words to a failed write
+        render();
+        showToast('Couldn’t add it — it’s still here, try again');
+      }
+    });
+    return;
+  }
+
   const reply = consumeReplyContext();
   addCapture(text, 0, 'text', reply); // local-first, never lose it
   state.draft = '';
@@ -1045,6 +1199,73 @@ function errorBanner(): string {
   return state.error ? `<p class="error-banner" role="alert">${escapeHtml(state.error)}</p>` : '';
 }
 
+/** True when the next capture should land on the To-Do list. A REPLY always overrides it — a
+ *  reply belongs on its thread in the inbox, never on the to-do list, whatever the switch says. */
+function isTodoMode(): boolean {
+  return state.destination === 'todo' && !state.replyContext;
+}
+
+/** The destination switch: the one tap that makes everything after it a to-do. Hidden while
+ *  she's replying to a Claude note, because that capture's destination isn't hers to choose. */
+function renderDestinationSwitch(): string {
+  if (state.replyContext) return '';
+  const chip = (value: Destination, label: string): string =>
+    `<button type="button" class="dest-chip${state.destination === value ? ' is-on' : ''}"
+             data-dest="${value}" aria-pressed="${state.destination === value}">${label}</button>`;
+  return `<div class="dest-switch" role="group" aria-label="Where this goes">
+      ${chip('inbox', '🧠 Brain dump')}${chip('todo', '✅ To-Do list')}
+    </div>`;
+}
+
+/** The list itself, right under the switch — "and then just is there" means she can SEE it, not
+ *  just fire into it. Active on top, done folded below, both from one read. */
+function renderTodoList(): string {
+  if (state.todosLoad === 'loading' || state.todosLoad === 'idle') {
+    return `<div class="todo-panel"><p class="todo-note">Loading your list…</p></div>`;
+  }
+  if (state.todosLoad === 'logged-out') {
+    return `<div class="todo-panel">
+      <p class="todo-note">You're logged out, so the list can't load. <strong>Adding still
+      works</strong> — it saves and shows up once you log in.</p>
+    </div>`;
+  }
+  if (state.todosLoad === 'error') {
+    return `<div class="todo-panel">
+      <button type="button" class="todo-retry" id="todo-retry">Couldn't load your list — tap to retry</button>
+    </div>`;
+  }
+  const active = state.todos.filter((t) => t.status === 'active');
+  const done = state.todos.filter((t) => t.status === 'done');
+  if (active.length === 0 && done.length === 0) {
+    return `<div class="todo-panel">
+      <p class="todo-note">Nothing on the list. Say it or type it below and it lands here.</p>
+    </div>`;
+  }
+  const row = (t: Todo): string =>
+    `<li class="todo-row${t.status === 'done' ? ' is-done' : ''}">
+      <button type="button" class="todo-check" data-todo="${escapeHtml(t.id)}"
+              data-done="${t.status === 'done' ? '1' : '0'}"
+              aria-label="${t.status === 'done' ? 'Restore' : 'Check off'}"
+              aria-pressed="${t.status === 'done'}">${t.status === 'done' ? '✓' : ''}</button>
+      <span class="todo-text" dir="auto">${escapeHtml(t.content)}</span>
+    </li>`;
+  return `<div class="todo-panel">
+      ${
+        active.length > 0
+          ? `<ul class="todo-list">${active.map(row).join('')}</ul>`
+          : `<p class="todo-note">All clear. ✨</p>`
+      }
+      ${
+        done.length > 0
+          ? `<details class="todo-done-fold">
+               <summary>Done (${done.length})</summary>
+               <ul class="todo-list">${done.map(row).join('')}</ul>
+             </details>`
+          : ''
+      }
+    </div>`;
+}
+
 function renderCompose(): string {
   const hasText = state.draft.trim().length > 0;
   return `
@@ -1075,13 +1296,18 @@ function renderCompose(): string {
       </div>`
           : ''
       }
-      <div class="canvas">
+      ${renderDestinationSwitch()}
+      ${
+        isTodoMode()
+          ? renderTodoList()
+          : `<div class="canvas">
         <p class="canvas-hint">${
           state.replyContext
             ? 'Reply by voice or text.<br />It threads back to that note.'
             : "Say it or type it.<br />It's saved to your Claude inbox."
         }</p>
-      </div>
+      </div>`
+      }
       ${
         state.needsKeyPrompt
           ? `<div class="key-prompt" role="status">
@@ -1095,7 +1321,8 @@ function renderCompose(): string {
       }
       <form class="composer" id="composer" autocomplete="off">
         <textarea class="composer-input" id="draft" rows="1" dir="auto"
-                  placeholder="What's on your mind?" aria-label="Type a thought"
+                  placeholder="${isTodoMode() ? 'Add a to-do…' : "What's on your mind?"}"
+                  aria-label="${isTodoMode() ? 'Type a to-do' : 'Type a thought'}"
                   spellcheck="false">${escapeHtml(state.draft)}</textarea>
         <button type="button" class="composer-action ${hasText ? 'is-send' : 'is-mic'}"
                 id="compose-action" aria-label="${hasText ? 'Send' : 'Record'}">${
@@ -1879,6 +2106,26 @@ function wireCompose(): void {
   document.getElementById('compose-action')?.addEventListener('click', () => {
     if (state.draft.trim().length > 0) sendComposed();
     else startVoice();
+  });
+
+  // v35 — the destination switch. One tap decides where everything after it lands.
+  document.querySelectorAll<HTMLElement>('.dest-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const next = chip.dataset.dest === 'todo' ? 'todo' : 'inbox';
+      if (next !== state.destination) setDestination(next);
+    });
+  });
+
+  // Check off / restore a to-do.
+  document.querySelectorAll<HTMLElement>('.todo-check').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.todo;
+      if (id) void toggleTodo(id, btn.dataset.done !== '1');
+    });
+  });
+
+  document.getElementById('todo-retry')?.addEventListener('click', () => {
+    void refreshTodos();
   });
 
   // Retry a recording whose transcription failed (held in state.pendingVoice).
@@ -2697,8 +2944,12 @@ function wirePlayerBar(): void {
 
 wirePlayerBar(); // the persistent player is live from boot, independent of the #app render cycle
 restoreLastView(); // a refresh keeps her on the tab she was on...
+restoreDestination(); // ...and on the destination she last picked (v35 — To-Do mode is sticky)
 handleNoteDeepLink(); // ...unless a notification deep-link says open a specific note.
 render();
+
+// v35 — if she left the switch on To-Do, load the list now so it's already there on first paint.
+if (state.destination === 'todo') void refreshTodos();
 
 // If opened by a Web Share (a WhatsApp voice note shared in), pick it up and transcribe.
 void ingestSharedAudio();

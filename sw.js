@@ -13,7 +13,7 @@
 // BUILT:  install/activate/fetch with the two strategies above + handleShareTarget().
 // NEXT:   bump VERSION when shipping a new build.
 
-const VERSION = 'voice-capture-v34.3';
+const VERSION = 'voice-capture-v35';
 const SHELL_CACHE = `${VERSION}-shell`;
 
 // Web Share Target hand-off cache. When a voice note is shared INTO the app (Android:
@@ -43,6 +43,7 @@ const CRITICAL_ASSETS = [
   './memos.html',
   './memos.css',
   './dist/memos.js',
+  './dist/todos.js',
 ];
 const NICE_ASSETS = [
   './manifest.webmanifest',
@@ -167,6 +168,7 @@ function isCodeRequest(url, request) {
     url.pathname.endsWith('/dist/pending-audio.js') ||
     url.pathname.endsWith('/dist/push.js') ||
     url.pathname.endsWith('/dist/memos.js') ||
+    url.pathname.endsWith('/dist/todos.js') ||
     url.pathname.endsWith('/index.html') ||
     url.pathname.endsWith('/memos.html')
   );

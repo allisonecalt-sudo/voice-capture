@@ -434,6 +434,108 @@ body {
   color: var(--success);
   text-align: center;
 }
+/* v35 — the destination switch + To-Do list on the compose screen. Her ask: "super easy — select
+   To Do List and then do like my usual talking or writing and then just is there." So the switch
+   sits ABOVE the canvas (decide first, then talk) and the list replaces the canvas hint, because
+   "just is there" means she has to be able to SEE it, not only fire into it. */
+.dest-switch {
+  display: flex;
+  gap: var(--s2);
+  width: 100%;
+  margin: 0 0 var(--s3);
+}
+.dest-chip {
+  flex: 1;
+  min-height: 44px; /* thumb target */
+  padding: var(--s2) var(--s3);
+  background: var(--surface-1);
+  border: 1.5px solid transparent;
+  border-radius: 999px;
+  color: var(--text-2);
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.dest-chip.is-on {
+  border-color: var(--accent);
+  color: var(--text-1);
+}
+
+.todo-panel {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0 0 var(--s3);
+}
+.todo-note {
+  margin: var(--s4) 0;
+  color: var(--text-3);
+  font-size: 14px;
+  line-height: var(--lh);
+  text-align: center;
+}
+.todo-retry {
+  width: 100%;
+  min-height: 44px;
+  background: var(--surface-1);
+  border: 1.5px solid var(--accent);
+  border-radius: var(--r-card);
+  color: var(--text-1);
+  font-family: var(--font);
+  font-size: 14px;
+  cursor: pointer;
+}
+.todo-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.todo-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s2) 0;
+}
+.todo-check {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  margin-top: 1px;
+  background: none;
+  border: 1.5px solid var(--text-3);
+  border-radius: 8px;
+  color: var(--accent);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.todo-row.is-done .todo-check {
+  border-color: var(--accent);
+}
+.todo-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-1);
+  font-size: 15px;
+  line-height: var(--lh);
+  overflow-wrap: anywhere;
+}
+.todo-row.is-done .todo-text {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+.todo-done-fold {
+  margin-top: var(--s3);
+}
+.todo-done-fold > summary {
+  padding: var(--s2) 0;
+  color: var(--text-3);
+  font-size: 13px;
+  cursor: pointer;
+}
+
 /* v34.3 — the share-in self-heal notice. Announces a break that ALREADY FIXED ITSELF, so it
    reads as news, not an alarm: accent border like the logged-out banner (same "something you
    should know" weight), but past-tense copy and a dismiss × instead of an action. Lives outside

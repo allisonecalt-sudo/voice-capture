@@ -25,7 +25,8 @@
     "history.ts",
     "auth.ts",
     "push.ts",
-    "memos.ts"
+    "memos.ts",
+    "todos.ts"
   ],
   "exclude": ["node_modules", "dist", "tests", "playwright.config.ts"]
 }
