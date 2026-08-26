@@ -23,11 +23,15 @@ asked for yet. Her rule: ship lean; defer loudly.
   `share_target` is discarded and the app stops being a share target at all. The POST can never
   be aimed at another origin.
 
-  **The only real fix is a host that accepts POST** (Cloudflare Pages / Netlify / Vercel + a
-  function). That means a NEW ORIGIN, which costs: reinstall the PWA, and localStorage +
-  IndexedDB do not come along — her Gemini key, her login session, her local history, any pending
-  audio. Worth pairing with a custom domain so it is the LAST origin move. Not a fix to slip in
-  quietly; it is hers to decide.
+  **The only real fix is a host that accepts POST — now BUILT, NOT SWITCHED ON.**
+  `functions/share-target.js` (Cloudflare Pages Function) + `_routes.json` + 5 tests are in the
+  repo and green; the function is inert while GitHub Pages serves the app, so it changed nothing
+  about the current deploy. Step-by-step in `MIGRATION-cloudflare.md`.
+  What is left needs HER login and only hers: create the Cloudflare account, connect the repo.
+  The cost is a NEW ORIGIN — reinstall the PWA, re-enter the Gemini key, log in again; her notes
+  are safe in Supabase and re-sync, but any recording still pending on the phone is lost. Worth
+  pairing with a custom domain so it is the LAST origin move. GitHub Pages keeps running
+  throughout, so it rolls back by just re-installing the old icon.
 
   **Correction on the stated damage:** this was first written up as "Aug 21 → Aug 26 = five days
   of captures lost." The live table does not support that — her real gaps between capture days
