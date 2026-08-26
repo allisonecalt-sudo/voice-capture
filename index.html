@@ -101,20 +101,78 @@
           });
       }
 
-      // PWA service worker registration — registers on load, no-op if unsupported.
+      // PWA service worker registration + EVICTION SELF-HEAL (v34.3, 2026-08-26).
+      // WHY: the Web Share Target spec requires share_target.action to sit inside the app's
+      //      own manifest scope, so the POST can NEVER be pointed at a server that could
+      //      handle it — on GitHub Pages the service worker is the only thing that can catch
+      //      it, and a missing worker means a bare "405 Not Allowed". So instead of preventing
+      //      that, detect it: if this origin registered a worker before and no registration is
+      //      here now, Android evicted it, share-in was dead until this moment, and she should
+      //      be TOLD (her rule: "you have to tell me if not"). Flag now, banner below.
+      var SW_SEEN = 'vc.swEverRegistered';
+      var SW_REPAIRED = 'vc.shareRepaired';
+
+      function readFlag(key) {
+        try {
+          return localStorage.getItem(key);
+        } catch {
+          return null; // storage disabled — self-heal degrades to plain registration
+        }
+      }
+      function writeFlag(key, value) {
+        try {
+          localStorage.setItem(key, value);
+        } catch {
+          /* storage disabled — nothing to remember with, and that's honest */
+        }
+      }
+
       if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker
-            .register('sw.js', { scope: './' })
-            .then((reg) => {
-              if (reg.waiting && navigator.serviceWorker.controller) {
-                reg.waiting.postMessage({ type: 'SKIP_WAITING' });
-              }
-            })
-            .catch((err) => {
-              console.warn('[PWA] Service worker registration failed:', err);
-            });
+        window.addEventListener('load', async () => {
+          try {
+            const existing = await navigator.serviceWorker.getRegistration('./');
+            if (!existing && readFlag(SW_SEEN) === '1') {
+              writeFlag(SW_REPAIRED, new Date().toISOString());
+            }
+          } catch {
+            // getRegistration unavailable — fall through and just register.
+          }
+          try {
+            const reg = await navigator.serviceWorker.register('sw.js', { scope: './' });
+            writeFlag(SW_SEEN, '1');
+            if (reg.waiting && navigator.serviceWorker.controller) {
+              reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+            }
+            // Show the notice for an eviction spotted HERE or on the Memos page.
+            if (readFlag(SW_REPAIRED)) showRepairedNotice();
+          } catch (err) {
+            console.warn('[PWA] Service worker registration failed:', err);
+          }
         });
+      }
+
+      // One-time, dismissable notice. Rendered OUTSIDE #app so the app's own re-renders
+      // can't wipe it, and cleared the moment it is shown (say it once, never nag).
+      function showRepairedNotice() {
+        try {
+          localStorage.removeItem(SW_REPAIRED);
+        } catch {
+          /* best effort */
+        }
+        const mount = document.getElementById('app');
+        if (!mount || document.getElementById('sw-repaired')) return;
+        const bar = document.createElement('div');
+        bar.id = 'sw-repaired';
+        bar.className = 'sw-repaired';
+        bar.setAttribute('role', 'status');
+        bar.innerHTML =
+          '<span class="banner-icon" aria-hidden="true">\u{1F527}</span>' +
+          '<span class="banner-text"><strong>Sharing notes into the app had stopped ' +
+          'working.</strong> Repaired just now — if a share bounced recently, send it ' +
+          'again.</span>' +
+          '<button type="button" class="banner-close" aria-label="Dismiss">×</button>';
+        bar.querySelector('.banner-close').addEventListener('click', () => bar.remove());
+        mount.parentNode.insertBefore(bar, mount);
       }
     </script>
   </body>

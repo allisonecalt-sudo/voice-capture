@@ -1668,3 +1668,83 @@ test.describe('WAV encoder (in-page unit check)', () => {
     expect(header.fmt).toBe('fmt ');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v34.3 — share-in self-heal. The Web Share Target spec pins share_target.action
+// inside the app's own manifest scope, so on GitHub Pages (which answers every
+// POST with a bare "405 Not Allowed") the service worker is the ONLY thing that
+// can catch a shared voice note. When Android evicts the worker, share-in dies
+// silently. The app can't prevent that — so it must NOTICE it and say so.
+// Mocked at the navigator.serviceWorker boundary, same posture as the rest of
+// this file: no real worker, no real registration, just the decision under test.
+// ─────────────────────────────────────────────────────────────────────────────
+async function stubServiceWorker(
+  page: import('@playwright/test').Page,
+  opts: { hasRegistration: boolean; seenBefore: boolean }
+): Promise<void> {
+  await page.addInitScript(
+    ({ hasRegistration, seenBefore }: { hasRegistration: boolean; seenBefore: boolean }) => {
+      try {
+        if (seenBefore) localStorage.setItem('vc.swEverRegistered', '1');
+        else localStorage.removeItem('vc.swEverRegistered');
+        localStorage.removeItem('vc.shareRepaired');
+      } catch {
+        /* storage disabled in this context — the assertions below will show it */
+      }
+      const registration = { waiting: null, scope: '/' };
+      Object.defineProperty(navigator, 'serviceWorker', {
+        configurable: true,
+        value: {
+          controller: null,
+          ready: Promise.resolve(registration),
+          getRegistration: async () => (hasRegistration ? registration : undefined),
+          register: async () => registration,
+          addEventListener() {},
+        },
+      });
+    },
+    opts
+  );
+}
+
+test.describe('v34.3 — share-in self-heal notice', () => {
+  test('worker evicted after a previous install → says so, once, and clears the flag', async ({
+    page,
+  }) => {
+    await installMocks(page);
+    await stubServiceWorker(page, { hasRegistration: false, seenBefore: true });
+    await page.goto('/');
+
+    const notice = page.locator('#sw-repaired');
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText('had stopped working');
+    await expect(notice).toContainText('send it again');
+
+    // Said once: the flag is consumed on display, so a reload stays quiet.
+    expect(await page.evaluate(() => localStorage.getItem('vc.shareRepaired'))).toBeNull();
+
+    // Dismissable — it is news, not a permanent scold.
+    await notice.getByRole('button', { name: 'Dismiss' }).click();
+    await expect(notice).toHaveCount(0);
+  });
+
+  test('worker still registered → no notice (nothing broke, say nothing)', async ({ page }) => {
+    await installMocks(page);
+    await stubServiceWorker(page, { hasRegistration: true, seenBefore: true });
+    await page.goto('/');
+    await expect(page.locator('.compose-field, #app')).toBeVisible();
+    await expect(page.locator('#sw-repaired')).toHaveCount(0);
+  });
+
+  test('first ever visit → no notice, and the origin is remembered for next time', async ({
+    page,
+  }) => {
+    await installMocks(page);
+    await stubServiceWorker(page, { hasRegistration: false, seenBefore: false });
+    await page.goto('/');
+    await expect(page.locator('#sw-repaired')).toHaveCount(0);
+    await expect
+      .poll(async () => page.evaluate(() => localStorage.getItem('vc.swEverRegistered')))
+      .toBe('1');
+  });
+});

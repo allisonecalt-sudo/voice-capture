@@ -57,11 +57,30 @@
       }
 
       // Same service-worker registration as index.html — no-op if already registered.
+      // Also does the same EVICTION DETECTION: Memos is a home-screen shortcut she can open
+      // without ever loading index.html, so if the worker was evicted it may well be THIS page
+      // that notices. It only raises the flag; index.html owns showing the notice (this page
+      // has no room for it, and the news belongs next to the share-in flow).
       if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('sw.js', { scope: './' }).catch((err) => {
+        window.addEventListener('load', async () => {
+          let evicted = false;
+          try {
+            const existing = await navigator.serviceWorker.getRegistration('./');
+            evicted = !existing && localStorage.getItem('vc.swEverRegistered') === '1';
+          } catch {
+            // getRegistration or storage unavailable — fall through and just register.
+          }
+          try {
+            await navigator.serviceWorker.register('sw.js', { scope: './' });
+            try {
+              localStorage.setItem('vc.swEverRegistered', '1');
+              if (evicted) localStorage.setItem('vc.shareRepaired', new Date().toISOString());
+            } catch {
+              /* storage disabled — registration still succeeded, which is what matters */
+            }
+          } catch (err) {
             console.warn('[PWA] Service worker registration failed:', err);
-          });
+          }
         });
       }
     </script>

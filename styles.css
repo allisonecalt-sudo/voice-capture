@@ -434,6 +434,42 @@ body {
   color: var(--success);
   text-align: center;
 }
+/* v34.3 — the share-in self-heal notice. Announces a break that ALREADY FIXED ITSELF, so it
+   reads as news, not an alarm: accent border like the logged-out banner (same "something you
+   should know" weight), but past-tense copy and a dismiss × instead of an action. Lives outside
+   #app, so it is styled standalone rather than inheriting the app's card chrome. */
+.sw-repaired {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  margin: 0 0 var(--s3);
+  padding: var(--s3) var(--s4);
+  background: var(--surface-1);
+  border: 1.5px solid var(--accent);
+  border-radius: var(--r-card);
+  color: var(--text-1);
+  font-family: var(--font);
+  font-size: 14px;
+  text-align: left;
+}
+.sw-repaired .banner-text {
+  flex: 1;
+  min-width: 0;
+  line-height: var(--lh);
+}
+.sw-repaired .banner-close {
+  flex-shrink: 0;
+  min-width: 44px; /* thumb target — she is one-handed on a Pixel */
+  min-height: 44px;
+  background: none;
+  border: 0;
+  color: var(--text-2);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
 /* v31 — logged-out is a BROKEN state (Claude notes can't load), so it announces itself: a real
    banner, not a quiet link. One tap = the fix (log in). Accent, not danger — inviting, not scolding. */
 .logged-out-banner {
