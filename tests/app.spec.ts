@@ -933,35 +933,53 @@ test.describe('v15 — 3-segment Log (Mine / Voice / Info)', () => {
     expect((row as { session_id?: string }).session_id).toBe('voice-capture-build-2026-07-01');
   });
 
-  test('the bar speed button cycles 1× → 1.25× → 1.5× → 1.75× → 2× → 0.75× and remembers it', async ({
+  test('v36: speed is a PICKER — tap opens the chips, one tap picks, applies + remembers', async ({
     page,
   }) => {
+    // The v35 cycle (tap-tap-tap through every rate) is gone BY DESIGN — her ask 2026-09-01:
+    // "I'd rather be able to select the speed than have to go through all the speeds."
     await seedLoggedIn(page);
-    // Speed is ONE control on the persistent bar now (not a per-card chip) — open the bar first.
     await page.locator('.claude-card .card-play').first().click();
     const speed = page.locator('#player-speed');
+    const chips = page.locator('#player-speeds');
     await expect(speed).toHaveText('1×');
-    await speed.click();
-    await expect(speed).toHaveText('1.25×');
-    await speed.click();
+    await expect(chips).toBeHidden();
+    await speed.click(); // opens the picker instead of stepping the rate
+    await expect(chips).toBeVisible();
+    await expect(speed).toHaveText('1×'); // opening did NOT change the speed
+    await expect(chips.locator('.speed-chip[aria-pressed="true"]')).toHaveText('1×');
+    await chips.locator('.speed-chip[data-rate="1.5"]').click();
+    await expect(chips).toBeHidden(); // picking closes it
     await expect(speed).toHaveText('1.5×');
-    await speed.click();
-    await expect(speed).toHaveText('1.75×');
-    await speed.click();
-    await expect(speed).toHaveText('2×');
-    await speed.click();
-    await expect(speed).toHaveText('0.75×');
-    await speed.click();
-    await expect(speed).toHaveText('1×');
-    // The bar audio's playbackRate tracks the button.
-    await speed.click(); // → 1.25×
     const rate = await page
       .locator('#player-audio')
       .evaluate((a: HTMLAudioElement) => a.playbackRate);
-    expect(rate).toBeCloseTo(1.25, 2);
+    expect(rate).toBeCloseTo(1.5, 2);
     // Persisted to localStorage.
     const stored = await page.evaluate(() => window.localStorage.getItem('vc.playbackRate'));
-    expect(stored).toBe('1.25');
+    expect(stored).toBe('1.5');
+  });
+
+  test('v36: the bar has a real seek row, 15/30 skips, and play/pause; native controls are gone', async ({
+    page,
+  }) => {
+    // Her ask 2026-09-01: "there's no bar to go forward and back… how to go far back." The native
+    // <audio controls> scrubber (a thin sliver on Android) is replaced by a big draggable range.
+    await seedLoggedIn(page);
+    await page.locator('.claude-card .card-play').first().click();
+    await expect(page.locator('#player-seek')).toBeVisible();
+    await expect(page.locator('#player-elapsed')).toHaveText('0:00');
+    await expect(page.locator('#player-audio')).toBeHidden(); // engine-only now
+    await expect(page.locator('#player-back')).toHaveAttribute('aria-label', 'Back 15 seconds');
+    await expect(page.locator('#player-fwd')).toHaveAttribute('aria-label', 'Forward 30 seconds');
+    await expect(page.locator('#player-play')).toBeVisible();
+    // Dragging previews the time in the elapsed label ('input' fires while the thumb moves).
+    await page.locator('#player-seek').evaluate((s: HTMLInputElement) => {
+      s.max = '300';
+      s.value = '42';
+      s.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await expect(page.locator('#player-elapsed')).toHaveText('0:42');
   });
 
   test('her reply renders with a "↩ re: …" tag in My Notes', async ({ page }) => {

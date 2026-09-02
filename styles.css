@@ -991,10 +991,77 @@ body {
   align-items: center;
   gap: var(--s2);
 }
+/* v36: the native controls are gone — the audio element is engine-only; the custom seek row +
+   buttons below are the UI (her ask: the native scrubber was a thin sliver she couldn't use). */
 .player-audio {
+  display: none;
+}
+/* v36: the seek row — [0:00] ───────●─── [-3:12]. Big, draggable, hers. */
+.player-seek-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+.player-time {
+  flex-shrink: 0;
+  min-width: 44px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
+.player-time:last-child {
+  text-align: right;
+}
+input[type='range'].player-seek {
   flex: 1;
   min-width: 0;
-  height: 40px;
+  height: 28px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  touch-action: none; /* dragging the thumb must never scroll the page instead */
+}
+/* v36: the speed chips — one tap picks; the current rate is filled. */
+.speed-chips {
+  display: flex;
+  gap: var(--s2);
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.speed-chips[hidden] {
+  display: none;
+}
+.speed-chip {
+  min-width: 52px;
+  padding: var(--s2);
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-1);
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.speed-chip[aria-pressed='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--surface-1);
+}
+/* v36: play/pause on the bar (the native control it replaces). */
+.player-play {
+  flex-shrink: 0;
+  min-width: 52px;
+  padding: var(--s2);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-1);
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
 }
 .player-skip {
   flex-shrink: 0;
@@ -1061,8 +1128,10 @@ body.player-open .screen {
 body.player-open .composer {
   bottom: var(--player-h, 0px);
 }
-/* Minimized: hide the scrubber row → a slim now-playing strip; the audio element keeps playing. */
-body.player-min .player-controls {
+/* Minimized: hide the control rows → a slim now-playing strip; the audio element keeps playing. */
+body.player-min .player-controls,
+body.player-min .player-seek-row,
+body.player-min .speed-chips {
   display: none;
 }
 

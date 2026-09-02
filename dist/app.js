@@ -48,13 +48,14 @@ const SHARE_CACHE = 'voice-capture-share';
 const SHARE_ITEM_KEY = 'shared-audio';
 // Visible build version (shown in the topbar) so she can tell at a glance whether a new
 // build actually loaded. BUMP THIS TOGETHER WITH sw.js VERSION on every deploy.
-const APP_VERSION = 'v35';
+const APP_VERSION = 'v36';
 // Build stamp shown next to the version — DATE + TIME so she knows exactly which build she's on (her
 // rule: version tags carry the time, not just the date). Update with APP_VERSION on every deploy.
-const BUILD_DATE = 'Aug 26, 2026 · 2:05pm JDT';
-// Playback-speed cycle for Claude voice notes (her ask: speed up / slow down). 1× first so the
-// default is unchanged; remembered across sessions in localStorage so her choice sticks.
-const SPEED_STEPS = [1, 1.25, 1.5, 1.75, 2, 0.75];
+const BUILD_DATE = 'Sep 2, 2026 · 4:25pm JDT';
+// v36: playback speeds for Claude voice notes — now a PICKER, not a cycle (her ask 2026-09-01:
+// "I'd rather be able to select the speed than have to go through all the speeds"). Ascending,
+// because this is the order the chips render in. Remembered in localStorage so her choice sticks.
+const SPEED_STEPS = [0.75, 1, 1.25, 1.5, 1.75, 2];
 const SPEED_KEY = 'vc.playbackRate';
 // Set ONLY after a subscription row actually lands in Supabase — NOT on a bare permission grant.
 // "✓ Notifications on" reads off this, so a silent store failure can't latch a false "on" (it used
@@ -237,10 +238,17 @@ function setPushSubscribed(on) {
         // storage disabled — the card just falls back to the default "Notify me" CTA.
     }
 }
-/** The next rate in the cycle (wraps): 1× → 1.25× → 1.5× → 1.75× → 2× → 0.75× → 1× … */
-function nextSpeed(rate) {
-    const i = SPEED_STEPS.indexOf(rate);
-    return SPEED_STEPS[(i + 1) % SPEED_STEPS.length];
+// v36: skip lengths — the podcast-app standard she asked for ("how to go far back"): a short
+// hop back to re-hear a sentence, a bigger hop forward. The seek bar covers anything larger.
+const SKIP_BACK_S = 15;
+const SKIP_FWD_S = 30;
+/** "m:ss" for the seek-bar time labels. NaN/∞ (metadata not loaded yet) renders as 0:00. */
+function fmtTime(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0)
+        return '0:00';
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${String(s).padStart(2, '0')}`;
 }
 /** "1×" / "1.25×" label for the speed button. */
 function speedLabel(rate) {
@@ -2492,6 +2500,25 @@ let playerWired = false;
 let currentNoteId = null;
 let pendingResume = 0; // seconds to seek to once the media loads (resume-where-you-left-off)
 let lastSavedPos = 0; // throttles position saves during timeupdate
+let seekDragging = false; // v36: true while her finger is on the seek bar (timeupdate stays hands-off)
+/** v36: keep the seek bar + time labels in step with the audio element. */
+function syncSeekUi(audio) {
+    const seek = document.getElementById('player-seek');
+    const elapsed = document.getElementById('player-elapsed');
+    const remaining = document.getElementById('player-remaining');
+    if (seek)
+        seek.value = String(Math.floor(audio.currentTime));
+    if (elapsed)
+        elapsed.textContent = fmtTime(audio.currentTime);
+    if (remaining)
+        remaining.textContent = `-${fmtTime(Math.max(0, (audio.duration || 0) - audio.currentTime))}`;
+}
+/** v36: the bar's play/pause button mirrors the audio state (▶ when paused, ❚❚ when playing). */
+function syncPlayGlyph(audio) {
+    const btn = document.getElementById('player-play');
+    if (btn)
+        btn.innerHTML = audio.paused ? '&#9654;' : '&#9646;&#9646;';
+}
 // v22 — remember each note's playback position, so if she clicks away / closes the bar she can pick
 // up where she left off ("if I accidentally click away it should save where I left off so I can
 // continue"). Kept per-note in localStorage; cleared when a note plays to the end.
@@ -2548,6 +2575,18 @@ function playNote(id, url, subject) {
     if (srcChanged) {
         audio.src = url;
         pendingResume = getPosition(id); // fresh load → resume where she left off (seeked on loadedmetadata)
+        // v36: a fresh note resets the seek bar until its metadata arrives (max is set on loadedmetadata).
+        const seek = document.getElementById('player-seek');
+        if (seek) {
+            seek.max = '0';
+            seek.value = '0';
+        }
+        const elapsed = document.getElementById('player-elapsed');
+        const remaining = document.getElementById('player-remaining');
+        if (elapsed)
+            elapsed.textContent = '0:00';
+        if (remaining)
+            remaining.textContent = '-0:00';
     }
     else {
         pendingResume = 0; // same note still loaded → keep its live position, don't rewind
@@ -2630,11 +2669,11 @@ function wirePlayerBar() {
         ms.setActionHandler('play', () => void audio.play());
         ms.setActionHandler('pause', () => audio.pause());
         ms.setActionHandler('seekbackward', () => {
-            audio.currentTime = Math.max(0, audio.currentTime - 10);
+            audio.currentTime = Math.max(0, audio.currentTime - SKIP_BACK_S);
         });
         ms.setActionHandler('seekforward', () => {
-            const end = audio.duration || audio.currentTime + 10;
-            audio.currentTime = Math.min(end, audio.currentTime + 10);
+            const end = audio.duration || audio.currentTime + SKIP_FWD_S;
+            audio.currentTime = Math.min(end, audio.currentTime + SKIP_FWD_S);
         });
     }
     // Tap the now-playing subject → jump to that note in the Log (YouTube-Music-style: the mini-player
@@ -2660,15 +2699,25 @@ function wirePlayerBar() {
             audio.currentTime = pendingResume;
             pendingResume = 0;
         }
+        // v36: the seek bar learns the note's real length the moment metadata arrives.
+        const seek = document.getElementById('player-seek');
+        if (seek && Number.isFinite(audio.duration))
+            seek.max = String(Math.floor(audio.duration));
+        syncSeekUi(audio);
     });
     audio.addEventListener('play', () => {
         applyRate();
         if (currentNoteId)
             state.playingId = currentNoteId;
         updatePlayButtonsInDom();
+        syncPlayGlyph(audio);
     });
     // Remember the position as it plays (throttled) + on pause, so a click-away/close can resume it.
     audio.addEventListener('timeupdate', () => {
+        // v36: the seek bar tracks playback — unless her finger is on it (seekDragging), so the
+        // thumb never fights her mid-drag.
+        if (!seekDragging)
+            syncSeekUi(audio);
         if (!currentNoteId)
             return;
         if (audio.currentTime - lastSavedPos >= 4) {
@@ -2679,6 +2728,7 @@ function wirePlayerBar() {
     audio.addEventListener('pause', () => {
         if (currentNoteId)
             savePosition(currentNoteId, audio.currentTime, audio.duration);
+        syncPlayGlyph(audio);
     });
     audio.addEventListener('ended', () => {
         if (currentNoteId) {
@@ -2688,21 +2738,75 @@ function wirePlayerBar() {
         }
         state.playingId = null; // finished — cards go back to ▶ Play (replay re-sets it on 'play')
         updatePlayButtonsInDom();
+        syncPlayGlyph(audio);
     });
+    // v36: speed is a PICKER (her ask: "select the speed", not step through all of them). The button
+    // toggles a chip row; one tap picks, remembers, applies, closes. Label shows the real rate on
+    // open too — it used to say 1× until first tapped, even when 1.5× was remembered.
+    const chips = document.getElementById('player-speeds');
+    const markChips = () => {
+        chips?.querySelectorAll('.speed-chip').forEach((c) => {
+            c.setAttribute('aria-pressed', String(Number(c.dataset.rate) === getSpeed()));
+        });
+    };
+    if (speedBtn)
+        speedBtn.textContent = speedLabel(getSpeed());
     speedBtn?.addEventListener('click', () => {
-        const rate = nextSpeed(getSpeed());
-        setSpeed(rate);
-        audio.playbackRate = rate;
-        speedBtn.textContent = speedLabel(rate);
+        if (chips) {
+            chips.hidden = !chips.hidden;
+            if (!chips.hidden)
+                markChips();
+        }
         buzz();
     });
-    // ±10s skip (her ask). Clamp to the media bounds.
+    chips?.addEventListener('click', (e) => {
+        const chip = e.target.closest('.speed-chip');
+        if (!chip)
+            return;
+        const rate = Number(chip.dataset.rate);
+        if (!SPEED_STEPS.includes(rate))
+            return;
+        setSpeed(rate);
+        audio.playbackRate = rate;
+        if (speedBtn)
+            speedBtn.textContent = speedLabel(rate);
+        if (chips)
+            chips.hidden = true;
+        buzz();
+    });
+    // v36: ⏪15 / 30⏩ — the podcast standard (her ask: "how to go far back"); the seek bar covers
+    // anything bigger. Clamp to the media bounds.
     document.getElementById('player-back')?.addEventListener('click', () => {
-        audio.currentTime = Math.max(0, audio.currentTime - 10);
+        audio.currentTime = Math.max(0, audio.currentTime - SKIP_BACK_S);
     });
     document.getElementById('player-fwd')?.addEventListener('click', () => {
-        const end = audio.duration || audio.currentTime + 10;
-        audio.currentTime = Math.min(end, audio.currentTime + 10);
+        const end = audio.duration || audio.currentTime + SKIP_FWD_S;
+        audio.currentTime = Math.min(end, audio.currentTime + SKIP_FWD_S);
+    });
+    // v36: play/pause lives on the bar now that the native controls are gone.
+    document.getElementById('player-play')?.addEventListener('click', () => {
+        if (audio.paused)
+            void audio.play().catch(() => { });
+        else
+            audio.pause();
+    });
+    // v36: the seek bar (her ask: "there's no bar to go forward and back"). While dragging, only the
+    // elapsed label previews (seekDragging keeps timeupdate hands-off); the seek lands on release.
+    const seek = document.getElementById('player-seek');
+    seek?.addEventListener('pointerdown', () => {
+        seekDragging = true;
+    });
+    seek?.addEventListener('input', () => {
+        const elapsed = document.getElementById('player-elapsed');
+        if (elapsed)
+            elapsed.textContent = fmtTime(Number(seek.value));
+    });
+    seek?.addEventListener('change', () => {
+        audio.currentTime = Number(seek.value);
+        seekDragging = false;
+    });
+    seek?.addEventListener('pointerup', () => {
+        seekDragging = false;
     });
     // v32 — Reply straight from the bar (her ask: "reply easily from the audio thing", "not go find
     // reply button"). Threads exactly like the card's Reply: parent id + snippet + session, then
